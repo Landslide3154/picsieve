@@ -46,6 +46,9 @@ pub fn run() {
             commands::query_files_cmd,
             commands::count_files_cmd,
             commands::get_thumb,
+            commands::list_dup_groups,
+            commands::set_keeper,
+            commands::rebuild_groups,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -275,36 +275,13 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    pub fn files_with_phash(&self) -> Result<Vec<crate::grouper::VisualRec>> {
+    /// 所有已算出 pHash 的记录（完整行，供相似聚类使用）。
+    pub fn files_with_phash(&self) -> Result<Vec<FileRecord>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, phash, pid, path FROM files WHERE status='normal' AND phash IS NOT NULL",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            let id: i64 = r.get(0)?;
-            let hex: String = r.get(1)?;
-            let pid: Option<i64> = r.get(2)?;
-            let path: String = r.get(3)?;
-            let stem = std::path::Path::new(&path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            Ok((id, hex, pid, stem))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (id, hex, pid, stem) = row?;
-            if let Some(phash) = crate::phash::from_hex(&hex) {
-                out.push(crate::grouper::VisualRec {
-                    id,
-                    phash,
-                    pid,
-                    page: crate::grouper::page_of(&stem),
-                });
-            }
-        }
-        Ok(out)
+        let mut stmt =
+            conn.prepare("SELECT * FROM files WHERE status='normal' AND phash IS NOT NULL")?;
+        let rows = stmt.query_map([], row_to_record)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     pub fn clear_groups(&self, kind: &str) -> Result<()> {
@@ -344,6 +321,79 @@ impl Db {
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(args), row_to_record)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 界面用的分组视图。注意：先取完组列表并**释放连接锁**，再逐个查成员，
+    /// 否则会在这把非可重入的锁上自锁。
+    pub fn list_groups(
+        &self,
+        kind: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<crate::model::GroupView>> {
+        let pairs: Vec<(i64, i64)> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT id, keep_file_id FROM dup_groups WHERE kind=?1 ORDER BY id LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = stmt.query_map(params![kind, limit.max(1), offset.max(0)], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
+            })?;
+            let mut v = Vec::new();
+            for row in rows {
+                let (gid, keep_id) = row?;
+                let keep_id = keep_id
+                    .ok_or_else(|| crate::error::AppError::Schema("分组缺少保留项".into()))?;
+                v.push((gid, keep_id));
+            }
+            v
+        };
+
+        let mut out = Vec::new();
+        for (gid, keep_id) in pairs {
+            let Some(keep) = self.get_file(keep_id)? else {
+                continue;
+            };
+            let rows = self.group_member_rows(gid)?;
+            let distances = rows.iter().map(|(_, d)| *d).collect();
+            let members = rows.into_iter().map(|(r, _)| r).collect();
+            out.push(crate::model::GroupView {
+                group_id: gid,
+                kind: kind.to_string(),
+                keep,
+                members,
+                distances,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 组内除保留项以外的成员，连带各自到基准的距离，按距离升序。
+    fn group_member_rows(&self, group_id: i64) -> Result<Vec<(FileRecord, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT f.*, m.distance FROM dup_members m
+             JOIN files f ON f.id = m.file_id
+             JOIN dup_groups g ON g.id = m.group_id
+             WHERE m.group_id = ?1 AND m.file_id != g.keep_file_id
+             ORDER BY m.distance ASC, f.id ASC",
+        )?;
+        let rows = stmt.query_map(params![group_id], |r| {
+            Ok((
+                row_to_record(r)?,
+                r.get::<_, Option<i64>>("distance")?.unwrap_or(0),
+            ))
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn set_group_keeper(&self, group_id: i64, file_id: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE dup_groups SET keep_file_id=?1 WHERE id=?2",
+            params![file_id, group_id],
+        )?;
+        Ok(())
     }
 
     pub fn query_count(&self, sql: &str, args: Vec<rusqlite::types::Value>) -> Result<i64> {

@@ -81,3 +81,24 @@ pub struct ScanStats {
     pub skipped: u64,
     pub failed: u64,
 }
+
+/// 重复组的界面视图：保留项 + 其余成员 + 各成员到基准的距离。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupView {
+    pub group_id: i64,
+    pub kind: String,
+    pub keep: FileRecord,
+    pub members: Vec<FileRecord>,
+    pub distances: Vec<i64>,
+}
+
+/// 隔离区里的一批文件。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantineBatch {
+    pub batch_id: String,
+    pub count: i64,
+    pub bytes: i64,
+    pub moved_at: i64,
+}

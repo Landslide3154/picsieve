@@ -56,3 +56,36 @@ export interface Settings {
   quarantineDir: string
   roots: string[]
 }
+
+/** 重复组的界面视图：保留项 + 其余成员 + 各成员到基准的距离 */
+export interface GroupView {
+  groupId: number
+  kind: string
+  keep: FileRecord
+  members: FileRecord[]
+  distances: number[]
+}
+
+/** 隔离区里的一批文件 */
+export interface QuarantineBatch {
+  batchId: string
+  count: number
+  bytes: number
+  movedAt: number
+}
+
+export interface RebuildResult {
+  exact: number
+  similar: number
+}
+
+export interface MoveReport {
+  moved: number
+  failed: number
+  bytes: number
+}
+
+export interface PurgeReport {
+  purged: number
+  bytes: number
+}

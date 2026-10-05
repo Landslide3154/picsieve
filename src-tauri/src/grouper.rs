@@ -104,14 +104,61 @@ pub fn should_merge(a: &VisualRec, b: &VisualRec, threshold: u32) -> bool {
     !pages_conflict(a, b)
 }
 
+/// 每个 content_hash 只留一个代表（保留规则与「一模一样」组完全一致）。
+///
+/// 单一成员的内容哈希也算「代表」——它只是没有副本，并不该被排除。
+fn distinct_content_keepers(all: &[FileRecord]) -> std::collections::HashSet<i64> {
+    let mut grouped: std::collections::HashMap<&str, Vec<&FileRecord>> =
+        std::collections::HashMap::new();
+    for r in all {
+        if let Some(h) = r.content_hash.as_deref() {
+            grouped.entry(h).or_default().push(r);
+        }
+    }
+    let mut keep = std::collections::HashSet::new();
+    for members in grouped.into_values() {
+        if members.len() == 1 {
+            keep.insert(members[0].id);
+            continue;
+        }
+        let owned: Vec<FileRecord> = members.into_iter().cloned().collect();
+        keep.insert(choose_keeper(&owned).id);
+    }
+    keep
+}
+
 /// 相似聚类：并查集 + 并行两两比较。
 ///
 /// 13.7 万张两两比较约 9.4×10⁹ 对，每对只是一次 XOR + popcount，
 /// pHash 数组约 1 MB 可全部落在缓存里，因此不做 LSH，保证不漏判。
+///
+/// 内容完全相同的文件只留一个代表参与聚类（见 `distinct_content_keepers`）。
 pub fn group_similar(db: &Db, threshold: u32, threads: usize) -> Result<Vec<SimilarGroup>> {
     use rayon::prelude::*;
 
-    let recs = db.files_with_phash()?;
+    let all = db.files_with_phash()?;
+    // 内容完全相同的副本已经在「一模一样」视图里处理过了：这里每个内容只留一个代表，
+    // 否则相似组会把同一组重复图再列一遍，白白翻倍用户的审阅量。
+    let keep_ids = distinct_content_keepers(&all);
+    let recs: Vec<VisualRec> = all
+        .into_iter()
+        .filter(|r| r.content_hash.is_none() || keep_ids.contains(&r.id))
+        .filter_map(|r| {
+            let phash = r.phash.as_deref().and_then(crate::phash::from_hex)?;
+            let stem = std::path::Path::new(&r.path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            Some(VisualRec {
+                id: r.id,
+                phash,
+                pid: r.pid,
+                page: page_of(&stem),
+            })
+        })
+        .collect();
+
     let n = recs.len();
     if n < 2 {
         return Ok(Vec::new());
@@ -374,6 +421,59 @@ mod tests {
             page: None,
         };
         assert!(!should_merge(&a, &b, 8));
+    }
+
+    /// 同一内容的副本不该在相似视图里再出现一次：
+    /// A 与 A' 内容完全相同（保留 A），B 是缩略版 —— 相似组只应有 A 与 B。
+    #[test]
+    fn identical_copies_appear_once_in_similar_view() {
+        use image::{Rgb, RgbImage};
+
+        fn busy(w: u32, h: u32) -> RgbImage {
+            let mut img = RgbImage::new(w, h);
+            for (x, y, p) in img.enumerate_pixels_mut() {
+                let r = (x * 255 / w.max(1)) as u8;
+                let g = (y * 255 / h.max(1)) as u8;
+                let b = if (x / 8 + y / 8) % 2 == 0 { 40 } else { 200 };
+                *p = Rgb([r, g, b]);
+            }
+            img
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("a.png");
+        let big2 = dir.path().join("a_copy.png");
+        let small = dir.path().join("b_small.png");
+        busy(400, 400).save(&big).unwrap();
+        busy(400, 400).save(&big2).unwrap();
+        image::DynamicImage::ImageRgb8(busy(400, 400))
+            .resize_exact(220, 220, image::imageops::FilterType::Lanczos3)
+            .save(&small)
+            .unwrap();
+
+        let db = Db::open_in_memory().unwrap();
+        db.migrate().unwrap();
+        let seed = |path: &std::path::Path, hash: Option<&str>| {
+            let img = image::open(path).unwrap();
+            db.upsert_file(&FileRecord {
+                path: path.to_string_lossy().to_string(),
+                root: "r".into(),
+                size: std::fs::metadata(path).unwrap().len() as i64,
+                mtime: 1,
+                content_hash: hash.map(str::to_string),
+                phash: Some(crate::phash::to_hex(crate::phash::phash_u64(&img))),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        seed(&big, Some("same"));
+        seed(&big2, Some("same"));
+        seed(&small, None);
+
+        let groups = group_similar(&db, 16, 2).unwrap();
+        assert_eq!(groups.len(), 1, "应只得到一组：大图 + 缩略版");
+        let member_count = groups[0].members.len();
+        assert_eq!(member_count, 1, "副本不该作为成员再出现一次");
     }
 
     /// 手工构造 137,000 条随机 pHash，测量 group_similar 的纯计算耗时。

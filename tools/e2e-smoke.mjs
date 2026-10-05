@@ -176,6 +176,53 @@ const flow = `(async () => {
     return el && el.textContent.includes('1') ? el.textContent.replace(/\\s+/g, ' ').trim() : null;
   }, '底部已选 1 张');
 
+  // 8b) 重复组视图。
+  // 夹具里缩略版与原图的 pHash 距离为 9，默认阈值 8 抓不到，这里把阈值放宽到 12，
+  // 顺便验证「相似阈值可在设置里调」这条链路。
+  const st = await invoke('get_settings');
+  st.similarThreshold = 12;
+  await invoke('save_settings', { settings: st });
+
+  byText('重复组').click();
+  await waitFor(() => byText('重建分组'), '重复组页出现');
+  byText('重建分组').click();
+  report.rebuildMsg = await waitFor(() => {
+    const el = document.querySelector('.msg');
+    return el && el.textContent.includes('一模一样') ? el.textContent.trim() : null;
+  }, '重建分组完成', 60000);
+
+  report.groupTitle = await waitFor(() => {
+    const h = document.querySelector('.head strong');
+    return h && h.textContent.includes('组') ? h.textContent.replace(/\\s+/g, ' ').trim() : null;
+  }, '分组标题');
+  report.groupCards = document.querySelectorAll('.card').length;
+  report.keepCards = document.querySelectorAll('.card.keep').length;
+  report.groupThumbs = document.querySelectorAll('.card img[src^="blob:"]').length;
+  report.groupFooter = (document.querySelector('.foot')?.textContent || '').replace(/\\s+/g, ' ').trim();
+  const keepPath = () => document.querySelector('.card.keep code')?.textContent || '';
+  report.groupKeepPath = keepPath();
+
+  // 「改留这张」应把蓝框换到另一张
+  const swapBtn = Array.from(document.querySelectorAll('.card button')).find((b) => b.textContent.includes('改留这张'));
+  if (swapBtn) {
+    report.swapAvailable = true;
+    swapBtn.click();
+    await waitFor(() => {
+      const p = keepPath();
+      return p && p !== report.groupKeepPath ? p : null;
+    }, '保留项已换人');
+    report.groupKeepPathAfterSwap = keepPath();
+    report.keepChanged = report.groupKeepPathAfterSwap !== report.groupKeepPath;
+  }
+
+  // 切到「看着像」：应只看到 1 组（大图 + 缩略版），完全相同的副本不再重复出现
+  const kindSel = document.querySelector('.head select');
+  kindSel.value = 'similar';
+  kindSel.dispatchEvent(new Event('change'));
+  await wait(800);
+  report.similarTitle = (document.querySelector('.head strong')?.textContent || '').replace(/\\s+/g, ' ').trim();
+  report.similarCards = document.querySelectorAll('.card').length;
+
   // 9) 后端数据侧对照：直接查库
   const filter = { minShortSide: null, maxShortSide: null, minSize: null, maxSize: null,
     exts: [], onlyGray: false, onlyDuplicated: false, onlyDecodeError: false,

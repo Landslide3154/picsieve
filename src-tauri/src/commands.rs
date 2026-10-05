@@ -149,3 +149,52 @@ pub fn get_thumb(
     let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
 }
+
+#[tauri::command]
+pub fn list_dup_groups(
+    state: State<'_, AppState>,
+    kind: String,
+    offset: i64,
+    limit: i64,
+) -> std::result::Result<Vec<crate::model::GroupView>, String> {
+    state
+        .db
+        .list_groups(&kind, offset, limit)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_keeper(
+    state: State<'_, AppState>,
+    group_id: i64,
+    file_id: i64,
+) -> std::result::Result<(), String> {
+    state
+        .db
+        .set_group_keeper(group_id, file_id)
+        .map_err(|e| e.to_string())
+}
+
+/// 重建分组。相似聚类是 O(n²) 的纯计算活，必须放到阻塞线程池，否则界面会假死。
+#[tauri::command]
+pub async fn rebuild_groups(app: AppHandle) -> std::result::Result<serde_json::Value, String> {
+    let (threshold, threads, db) = {
+        let state = app.state::<AppState>();
+        let (threshold, threads) = {
+            let s = state.settings.lock();
+            (s.similar_threshold, s.threads)
+        };
+        (threshold, threads, state.db.clone())
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let exact = crate::grouper::group_exact(&db).map_err(|e| e.to_string())?;
+        crate::grouper::persist_exact(&db, &exact).map_err(|e| e.to_string())?;
+        let similar =
+            crate::grouper::group_similar(&db, threshold, threads).map_err(|e| e.to_string())?;
+        crate::grouper::persist_similar(&db, &similar, threshold).map_err(|e| e.to_string())?;
+        Ok::<_, String>(serde_json::json!({ "exact": exact.len(), "similar": similar.len() }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

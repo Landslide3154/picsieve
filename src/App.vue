@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import ActionBar from './components/ActionBar.vue'
+import DupGroupView from './components/DupGroupView.vue'
 import FilterPanel from './components/FilterPanel.vue'
 import ThumbGrid from './components/ThumbGrid.vue'
 import ScanProgress from './components/ScanProgress.vue'
 
-const tab = ref<'library' | 'scan'>('library')
+const tab = ref<'library' | 'groups' | 'scan'>('library')
 const notice = ref('')
+
+function showNotice(text: string) {
+  notice.value = text
+  window.setTimeout(() => (notice.value = ''), 4000)
+}
 
 function moveToQuarantine() {
   // 隔离区在任务 17/18 接入，这里先给出明确反馈，不做任何文件操作
-  notice.value = '隔离区功能还在接入中，暂时不会移动任何文件'
-  window.setTimeout(() => (notice.value = ''), 3000)
+  showNotice('隔离区功能还在接入中，暂时不会移动任何文件')
 }
 </script>
 
@@ -20,6 +25,7 @@ function moveToQuarantine() {
     <strong>图筛 PicSieve</strong>
     <nav>
       <button :class="{ on: tab === 'library' }" @click="tab = 'library'">图库</button>
+      <button :class="{ on: tab === 'groups' }" @click="tab = 'groups'">重复组</button>
       <button :class="{ on: tab === 'scan' }" @click="tab = 'scan'">扫描</button>
     </nav>
     <span class="flex" />
@@ -27,6 +33,10 @@ function moveToQuarantine() {
   </header>
 
   <ScanProgress v-if="tab === 'scan'" />
+  <DupGroupView
+    v-else-if="tab === 'groups'"
+    @move-to-quarantine="moveToQuarantine"
+  />
   <template v-else>
     <div class="body">
       <FilterPanel />
