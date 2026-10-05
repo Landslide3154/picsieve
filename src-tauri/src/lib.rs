@@ -8,6 +8,7 @@ pub mod hashing;
 pub mod model;
 pub mod nameparse;
 pub mod phash;
+pub mod query;
 pub mod scanner;
 pub mod settings;
 
@@ -41,6 +42,8 @@ pub fn run() {
             commands::start_scan,
             commands::cancel_scan,
             commands::start_fingerprint,
+            commands::query_files_cmd,
+            commands::count_files_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

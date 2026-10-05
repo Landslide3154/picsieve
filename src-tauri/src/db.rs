@@ -334,6 +334,23 @@ impl Db {
         )?;
         Ok(())
     }
+
+    pub fn query_records(
+        &self,
+        sql: &str,
+        args: Vec<rusqlite::types::Value>,
+    ) -> Result<Vec<FileRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(args), row_to_record)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn query_count(&self, sql: &str, args: Vec<rusqlite::types::Value>) -> Result<i64> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(sql)?;
+        Ok(stmt.query_row(rusqlite::params_from_iter(args), |r| r.get(0))?)
+    }
 }
 
 fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {

@@ -1,5 +1,5 @@
 use crate::db::Db;
-use crate::model::ScanStats;
+use crate::model::{FileRecord, Filter, ScanStats};
 use crate::scanner::{self, ScanOptions};
 use crate::settings::{self, Settings};
 use std::path::PathBuf;
@@ -100,4 +100,22 @@ pub async fn start_fingerprint(app: AppHandle) -> std::result::Result<serde_json
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn query_files_cmd(
+    state: State<'_, AppState>,
+    filter: Filter,
+) -> std::result::Result<Vec<FileRecord>, String> {
+    let gray = state.settings.lock().gray_threshold;
+    crate::query::query_files_gray(&state.db, &filter, gray).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn count_files_cmd(
+    state: State<'_, AppState>,
+    filter: Filter,
+) -> std::result::Result<i64, String> {
+    let gray = state.settings.lock().gray_threshold;
+    crate::query::count_files_gray(&state.db, &filter, gray).map_err(|e| e.to_string())
 }
