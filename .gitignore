@@ -1,6 +1,9 @@
 # 视觉伴侣（brainstorming）会话文件，不进版本库
 .superpowers/
 
+# 设计参考图：第三方软件截图，只作本地参考，不入库
+docs/reference/
+
 # Rust / Tauri
 target/
 src-tauri/target/

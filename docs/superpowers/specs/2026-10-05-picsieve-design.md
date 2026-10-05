@@ -405,6 +405,7 @@ CREATE TABLE delete_log (
 
 - **为什么用 n = 4 而不是正圆角**：正圆角相当于 n = 2，它的曲率在与直边衔接处从「弯」突变到「直」，视觉上会出现一道不易察觉的折感；n = 4 时圆角在靠近直边处更快变平，直线与曲线的过渡是一阶导连续的，看上去更顺。这是用户明确指出的问题，不得改回正圆角。
 - **出处**：SnowDesktop 项目 `src/icon_beautify.cpp` 中的 `kLegacyCornerRadiusRatio = 0.35f` 与 `kLegacyCornerExponent = 4.0f`（MIT 许可，其形状目录改编自 DeskMakeover 的 dm-icon-core shape catalog）。本项目**只采用其几何参数，不复制其任何图形**。
+- 样式参考图的本地副本存放在 `docs/reference/icon-reference.png`。它是第三方软件的截图，**不纳入版本库**（已写入 `.gitignore`），仅作本地比对用。
 
 **颜色**
 
