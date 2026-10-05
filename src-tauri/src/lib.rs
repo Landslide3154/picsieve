@@ -8,6 +8,7 @@ pub mod hashing;
 pub mod model;
 pub mod nameparse;
 pub mod phash;
+pub mod quarantine;
 pub mod query;
 pub mod scanner;
 pub mod settings;
@@ -49,6 +50,9 @@ pub fn run() {
             commands::list_dup_groups,
             commands::set_keeper,
             commands::rebuild_groups,
+            commands::move_to_quarantine,
+            commands::restore_batch,
+            commands::purge_batch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

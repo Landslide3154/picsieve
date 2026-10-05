@@ -198,3 +198,49 @@ pub async fn rebuild_groups(app: AppHandle) -> std::result::Result<serde_json::V
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// 移入隔离区。跨盘时会退化成「复制 + 校验指纹 + 删源」，可能很慢，必须离开界面线程。
+#[tauri::command]
+pub async fn move_to_quarantine(
+    app: AppHandle,
+    file_ids: Vec<i64>,
+) -> std::result::Result<crate::quarantine::MoveReport, String> {
+    let (dir, db) = {
+        let state = app.state::<AppState>();
+        let dir = state.settings.lock().quarantine_dir.clone();
+        (dir, state.db.clone())
+    };
+    let batch = uuid::Uuid::new_v4().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::quarantine::move_in(&db, &file_ids, std::path::Path::new(&dir), &batch)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn restore_batch(
+    app: AppHandle,
+    batch: String,
+) -> std::result::Result<crate::quarantine::MoveReport, String> {
+    let db = app.state::<AppState>().db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::quarantine::restore(&db, &batch).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn purge_batch(
+    app: AppHandle,
+    batch: String,
+) -> std::result::Result<crate::quarantine::PurgeReport, String> {
+    let db = app.state::<AppState>().db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::quarantine::purge(&db, &batch).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

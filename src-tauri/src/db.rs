@@ -396,6 +396,65 @@ impl Db {
         Ok(())
     }
 
+    pub fn record_quarantine(
+        &self,
+        file_id: i64,
+        original: &str,
+        moved: &str,
+        batch: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO quarantine (file_id, original_path, moved_path, batch_id, moved_at)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![file_id, original, moved, batch, now_secs()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_status(&self, id: i64, status: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE files SET status=?1 WHERE id=?2",
+            params![status, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn quarantine_batch(&self, batch: &str) -> Result<Vec<(i64, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, original_path, moved_path FROM quarantine
+             WHERE batch_id=?1 AND restored_at IS NULL",
+        )?;
+        let rows = stmt.query_map(params![batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn mark_restored(&self, file_id: i64, at: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE quarantine SET restored_at=?1 WHERE file_id=?2 AND restored_at IS NULL",
+            params![at, file_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn log_delete(&self, path: &str, size: i64, batch: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO delete_log (path, size, purged_at, batch_id) VALUES (?1,?2,?3,?4)",
+            params![path, size, now_secs(), batch],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_quarantine_row(&self, file_id: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM quarantine WHERE file_id=?1", params![file_id])?;
+        Ok(())
+    }
+
     pub fn query_count(&self, sql: &str, args: Vec<rusqlite::types::Value>) -> Result<i64> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(sql)?;
