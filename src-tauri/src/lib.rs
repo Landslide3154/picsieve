@@ -1,8 +1,11 @@
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod gray;
+pub mod hashing;
 pub mod model;
 pub mod nameparse;
+pub mod phash;
 pub mod scanner;
 pub mod settings;
 

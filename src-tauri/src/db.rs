@@ -181,6 +181,33 @@ impl Db {
         }
         Ok(map)
     }
+
+    pub fn query_column<T: rusqlite::types::FromSql>(
+        &self,
+        sql: &str,
+        p: impl rusqlite::Params,
+    ) -> Result<Vec<T>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(p, |r| r.get::<_, T>(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn query_files_by_size(&self, size: i64) -> Result<Vec<FileRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT * FROM files WHERE size = ?1 AND status='normal'")?;
+        let rows = stmt.query_map(params![size], row_to_record)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn set_content_hash(&self, id: i64, hex: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE files SET content_hash = ?1 WHERE id = ?2",
+            params![hex, id],
+        )?;
+        Ok(())
+    }
 }
 
 fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
