@@ -23,6 +23,18 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // 记住窗口位置、大小、是否最大化（存在 app 配置目录的 .window-state.json）。
+        // 只留这三项：默认的「全部」里还包含可见性，万一在隐藏状态下退出，
+        // 下次启动就会恢复成「窗口不可见」——那等于程序打不开，必须排除。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .setup(|app| {
             // 用 LocalAppData：数据库与缩略图缓存体量大，不该跟着漫游配置文件走。
             let app_data = app.path().app_local_data_dir().expect("app data dir");
@@ -44,6 +56,18 @@ pub fn run() {
                 settings: parking_lot::Mutex::new(s),
                 cancel: Arc::new(AtomicBool::new(false)),
             });
+
+            // 窗口配置成 visible: false，等前端第一帧画好再显示，
+            // 这样就不会出现「先在默认位置闪一下、再跳到上次的位置」。
+            // 万一前端没起来（白屏），3 秒后也要把窗口露出来，别让人以为程序没启动。
+            if let Some(w) = app.get_webview_window("main") {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    if !w.is_visible().unwrap_or(true) {
+                        let _ = w.show();
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -72,6 +96,7 @@ pub fn run() {
             commands::list_quarantine_batches,
             commands::thumb_cache_stats,
             commands::trim_thumb_cache,
+            commands::show_main_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { fmtBytes, fmtCount, fmtRelative } from '../format'
 import { SORT_OPTIONS, useLibrary } from '../stores/library'
 
 export type TabKey = 'library' | 'groups' | 'quarantine' | 'scan' | 'settings'
 
-const props = defineProps<{ tab: TabKey; roots: string[] }>()
+const props = defineProps<{ tab: TabKey }>()
 const emit = defineEmits<{ (e: 'update:tab', tab: TabKey): void }>()
 
 const store = useLibrary()
@@ -17,12 +15,6 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'scan', label: '扫描' },
   { key: 'settings', label: '设置' },
 ]
-
-const lastScanText = computed(() => fmtRelative(store.stats.lastScanAt, '扫描'))
-
-const rootsTip = computed(() =>
-  props.roots.length ? '扫描目录：\n' + props.roots.join('\n') : '还没有添加扫描目录',
-)
 </script>
 
 <template>
@@ -56,10 +48,6 @@ const rootsTip = computed(() =>
           <option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
       </label>
-      <span class="meta num" :title="rootsTip">
-        库内 {{ fmtCount(store.stats.total) }} 张 · {{ fmtBytes(store.stats.bytes) }} ·
-        {{ lastScanText }}
-      </span>
     </div>
   </header>
 </template>
@@ -131,13 +119,5 @@ const rootsTip = computed(() =>
 .sort select {
   padding: 3px 6px;
   font-size: 12px;
-}
-.meta {
-  font-size: 12px;
-  color: var(--dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 </style>

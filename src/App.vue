@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { getSettings, moveToQuarantine } from './api'
+import { getSettings, moveToQuarantine, showMainWindow } from './api'
 import ActionBar from './components/ActionBar.vue'
 import DupGroupView from './components/DupGroupView.vue'
 import FilterPanel from './components/FilterPanel.vue'
@@ -33,6 +33,11 @@ async function loadSettings() {
 }
 
 onMounted(async () => {
+  // 先让窗口露脸，再慢慢加载数据：窗口在配置里是隐藏的，
+  // 等 window-state 插件恢复完上次的位置/大小，第一帧画好就显示，避免闪一下。
+  requestAnimationFrame(() => {
+    void showMainWindow().catch(() => {})
+  })
   await loadSettings()
   await Promise.all([
     store.refreshNow(),
@@ -77,28 +82,43 @@ function afterScan() {
 </script>
 
 <template>
-  <TopBar :tab="tab" :roots="settings?.roots ?? []" @update:tab="tab = $event" />
+  <TopBar :tab="tab" @update:tab="tab = $event" />
 
-  <ScanProgress v-if="tab === 'scan'" @changed="afterScan" />
-  <SettingsView v-else-if="tab === 'settings'" @saved="loadSettings" />
-  <QuarantineView v-else-if="tab === 'quarantine'" @changed="afterScan" />
-  <DupGroupView v-else-if="tab === 'groups'" @move-to-quarantine="move" />
-  <template v-else>
-    <div class="body">
-      <FilterPanel />
-      <ThumbGrid
-        :gray-threshold="settings?.grayThreshold ?? 8"
-        @notice="showNotice"
-        @quarantine="move"
-      />
-    </div>
-    <ActionBar @move-to-quarantine="moveSelected" @select-all="store.selectAllLoaded()" />
-  </template>
+  <div class="view">
+    <ScanProgress v-if="tab === 'scan'" @changed="afterScan" />
+    <SettingsView v-else-if="tab === 'settings'" @saved="loadSettings" />
+    <QuarantineView v-else-if="tab === 'quarantine'" @changed="afterScan" />
+    <DupGroupView v-else-if="tab === 'groups'" @move-to-quarantine="move" />
+    <template v-else>
+      <div class="body">
+        <FilterPanel />
+        <ThumbGrid
+          :gray-threshold="settings?.grayThreshold ?? 8"
+          @notice="showNotice"
+          @quarantine="move"
+        />
+      </div>
+    </template>
+  </div>
+
+  <!-- 底部一条常驻：中间显示库内信息，图库页再带上选中情况与操作 -->
+  <ActionBar
+    :tab="tab"
+    :roots="settings?.roots ?? []"
+    @move-to-quarantine="moveSelected"
+    @select-all="store.selectAllLoaded()"
+  />
 
   <p v-if="notice" class="toast" role="status" aria-live="polite">{{ notice }}</p>
 </template>
 
 <style scoped>
+.view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .body {
   display: flex;
   flex: 1;

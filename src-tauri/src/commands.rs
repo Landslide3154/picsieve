@@ -438,6 +438,18 @@ pub async fn trim_thumb_cache(
     .map_err(|e| e.to_string())
 }
 
+/// 前端第一帧画好后调用：把窗口显示出来。
+///
+/// 窗口在配置里是 `visible: false`，为的是等 `window-state` 插件恢复完位置/大小
+/// 再露脸，避免「先在默认位置闪一下、再跳到上次的位置」。
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) -> std::result::Result<(), String> {
+    if let Some(w) = app.get_webview_window("main") {
+        w.show().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::reveal_arg;

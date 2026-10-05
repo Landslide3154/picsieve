@@ -44,6 +44,8 @@ export const histogram = (kind: 'size' | 'pixels') =>
   invoke<Histogram>('histogram_cmd', { kind })
 /** 库里实际有哪些格式、各多少张 */
 export const formatStats = () => invoke<FormatStat[]>('format_stats_cmd')
+/** 第一帧画好后显示主窗口（窗口在配置里是隐藏的，等恢复了上次的位置大小再露脸） */
+export const showMainWindow = () => invoke<void>('show_main_window')
 
 // ---------- 缩略图与预览 ----------
 /** 取缩略图并转成可直接放进 <img src> 的 Blob URL。调用方负责在不用时 revoke。 */
