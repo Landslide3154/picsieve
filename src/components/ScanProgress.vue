@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { cancelScan, onScanProgress, saveSettings, startScan, getSettings, pickFolder } from '../api'
+import { cancelScan, onScanProgress, saveSettings, startFingerprint, startScan, getSettings, pickFolder } from '../api'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { ScanStats, Settings } from '../types'
-import type { UnlistenFn } from '@tauri-apps/api/event'
 
 const settings = ref<Settings | null>(null)
 const running = ref(false)
+const fpRunning = ref(false)
 const seen = ref(0)
 const totalHint = ref(0)
 const current = ref('')
 const stats = ref<ScanStats | null>(null)
+const fpText = ref('')
 const error = ref('')
 
 const percent = computed(() =>
@@ -17,6 +19,7 @@ const percent = computed(() =>
 )
 
 let unlisten: UnlistenFn | null = null
+let unlistenFp: UnlistenFn | null = null
 
 onMounted(async () => {
   settings.value = await getSettings()
@@ -25,9 +28,22 @@ onMounted(async () => {
     totalHint.value = p.totalHint
     current.value = p.current
   })
+  unlistenFp = await listen<{ phase: string; stats: Record<string, number> }>(
+    'fingerprint://progress',
+    (e) => {
+      const s = e.payload.stats
+      fpText.value =
+        e.payload.phase === 'content'
+          ? `内容指纹：已算 ${s.hashed ?? 0} 张，涉及 ${s.groups ?? 0} 组`
+          : `视觉指纹：已完成 ${s.done ?? 0} 张，失败 ${s.failed ?? 0} 张`
+    },
+  )
 })
 
-onUnmounted(() => unlisten?.())
+onUnmounted(() => {
+  unlisten?.()
+  unlistenFp?.()
+})
 
 async function addRoot() {
   if (!settings.value) return
@@ -55,6 +71,21 @@ async function run() {
     error.value = String(e)
   } finally {
     running.value = false
+  }
+}
+
+async function runFingerprint() {
+  error.value = ''
+  fpText.value = '正在计算…'
+  fpRunning.value = true
+  try {
+    await startFingerprint()
+    fpText.value = '指纹计算完成'
+  } catch (e) {
+    error.value = String(e)
+    fpText.value = ''
+  } finally {
+    fpRunning.value = false
   }
 }
 </script>
@@ -89,6 +120,18 @@ async function run() {
       新增 {{ stats.inserted }} · 更新 {{ stats.updated }} · 跳过 {{ stats.skipped }} · 失败
       {{ stats.failed }}
     </p>
+
+    <h2>指纹计算</h2>
+    <p class="path">
+      第一遍只读「大小重复」的文件算内容指纹；第二遍解码缩略图算视觉指纹与灰度。中途退出可以续算。
+    </p>
+    <div class="row">
+      <button class="primary" :disabled="fpRunning || running" @click="runFingerprint">
+        开始计算指纹
+      </button>
+    </div>
+    <p v-if="fpText" class="summary">{{ fpText }}</p>
+
     <p v-if="error" class="error">{{ error }}</p>
   </section>
 </template>

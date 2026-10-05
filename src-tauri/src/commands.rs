@@ -125,7 +125,7 @@ pub fn get_thumb(
     app: AppHandle,
     state: State<'_, AppState>,
     file_id: i64,
-) -> std::result::Result<Vec<u8>, String> {
+) -> std::result::Result<tauri::ipc::Response, String> {
     let rec = state
         .db
         .get_file(file_id)
@@ -145,5 +145,7 @@ pub fn get_thumb(
         max_edge,
     )
     .map_err(|e| e.to_string())?;
-    std::fs::read(&p).map_err(|e| e.to_string())
+    // 用 Response 直接回二进制：几千张缩略图若走 JSON 数组会白烧 CPU 和内存
+    let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
