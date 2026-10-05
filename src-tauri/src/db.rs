@@ -117,7 +117,8 @@ impl Db {
     /// 1. `status` 为空串时按 `normal` 处理，避免调用方漏填导致记录在筛选里消失。
     /// 2. 走到 ON CONFLICT（说明大小或修改时间变了，文件内容可能已不同）时，
     ///    会把旧的指纹列清空，逼着下一轮指纹重算——否则改过的图会留着旧指纹。
-    ///    但**不动 status**：已进隔离区的记录不能被一次扫描复活。
+    /// 3. 同一条记录若被扫到，status 一律回到 `normal`：文件既然还躺在盘上，
+    ///    就不该停留在 quarantined 上。否则「彻底清空后同路径又下了一张图」会永远看不见。
     pub fn upsert_file(&self, rec: &FileRecord) -> Result<i64> {
         let short_side = rec.compute_short_side();
         let now = now_secs();
@@ -138,7 +139,8 @@ impl Db {
                  height=excluded.height, short_side=excluded.short_side,
                  pid=excluded.pid, artist=excluded.artist, scanned_at=excluded.scanned_at,
                  content_hash=NULL, phash=NULL, gray_score=NULL,
-                 decode_error=NULL, fingerprinted_at=NULL"#,
+                 decode_error=NULL, fingerprinted_at=NULL,
+                 status='normal'"#,
             params![
                 rec.path,
                 rec.root,
@@ -455,6 +457,45 @@ impl Db {
         Ok(())
     }
 
+    /// 隔离区里还没搬回的批次，按最近移入排序，带张数与体积。
+    pub fn quarantine_batches(&self) -> Result<Vec<crate::model::QuarantineBatch>> {
+        let heads: Vec<(String, i64, i64)> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT batch_id, COUNT(*), MAX(moved_at) FROM quarantine
+                 WHERE restored_at IS NULL GROUP BY batch_id ORDER BY MAX(moved_at) DESC",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut out = Vec::new();
+        for (batch_id, count, moved_at) in heads {
+            let bytes: i64 = {
+                let conn = self.conn.lock();
+                conn.query_row(
+                    "SELECT COALESCE(SUM(f.size),0) FROM quarantine q JOIN files f ON f.id=q.file_id
+                     WHERE q.batch_id=?1 AND q.restored_at IS NULL",
+                    params![batch_id],
+                    |r| r.get(0),
+                )?
+            };
+            out.push(crate::model::QuarantineBatch {
+                batch_id,
+                count,
+                bytes,
+                moved_at,
+            });
+        }
+        Ok(out)
+    }
+
     pub fn query_count(&self, sql: &str, args: Vec<rusqlite::types::Value>) -> Result<i64> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(sql)?;
@@ -535,5 +576,38 @@ mod tests {
         let id = db.upsert_file(&rec).expect("upsert");
         let got = db.get_file(id).expect("get").expect("some");
         assert_eq!(got.short_side, Some(600), "short_side 应由写入时算好");
+    }
+
+    /// 文件被扫到时，记录必须回到 normal 并且旧指纹清空。
+    /// 破坏性端到端验证发现了这个漏洞：彻底清空后同路径再放一张图，图库永远看不到它。
+    #[test]
+    fn upsert_revives_status_and_clears_stale_fingerprints() {
+        let db = Db::open_in_memory().expect("open");
+        db.migrate().expect("migrate");
+        let rec = FileRecord {
+            path: r"D:\色图\a.jpg".into(),
+            root: r"D:\色图".into(),
+            size: 1024,
+            mtime: 100,
+            content_hash: Some("deadbeef".into()),
+            phash: Some("0000000000000001".into()),
+            gray_score: Some(3.0),
+            ..Default::default()
+        };
+        let id = db.upsert_file(&rec).expect("upsert");
+        db.set_status(id, "quarantined").expect("status");
+
+        let changed = FileRecord {
+            size: 2048,
+            mtime: 200,
+            ..rec.clone()
+        };
+        db.upsert_file(&changed).expect("upsert again");
+
+        let got = db.get_file(id).expect("get").expect("some");
+        assert_eq!(got.status, "normal", "文件还在盘上就不该停在 quarantined");
+        assert!(got.content_hash.is_none(), "内容变了，旧内容指纹必须作废");
+        assert!(got.phash.is_none(), "内容变了，旧视觉指纹必须作废");
+        assert!(got.gray_score.is_none());
     }
 }
