@@ -53,6 +53,9 @@ D:\code\PicSieve\
 │   │   └── QuarantineView.vue    隔离区管理
 │   └── styles/main.css           全局样式与主题变量
 │
+├── tools/
+│   └── make_icon.py              生成应用图标源图（Pillow，不依赖外部素材）
+│
 └── src-tauri/                    ── 后端（Rust）
     ├── Cargo.toml
     ├── build.rs
@@ -92,7 +95,7 @@ D:\code\PicSieve\
 | M3 分组与查询 | 11–13 | 能查出重复组，能按条件筛选 |
 | M4 界面 | 14–16 | 图库网格、筛选栏、重复组审阅可用 |
 | M5 隔离区与设置 | 17–19 | 能移入、搬回、清空；各项参数可调 |
-| M6 打包 | 20 | 安装包与免安装包，真机冒烟 |
+| M6 图标与打包 | 20–21 | 应用图标全套资产；安装包与免安装包，真机冒烟 |
 
 ---
 
@@ -4657,7 +4660,181 @@ git push origin main
 
 ---
 
-## 任务 20：打包与真机冒烟
+## 任务 20：制作应用图标资产
+
+**文件：**
+- 创建：`tools/make_icon.py`
+- 生成：`src-tauri/icons/source.png` 以及 `pnpm tauri icon` 产出的一整套
+- 修改：`src-tauri/tauri.conf.json`（确认 `bundle.icon` 指向生成的文件）
+
+**规格依据：** 设计文档第 9.6 节。三条硬要求：圆角半径 **0.35 S**、圆角曲线为**超椭圆指数 4**、底色为**纯色 `#3451C6`（无渐变）**。
+
+- [ ] **步骤 1：编写图标生成脚本**
+
+```python
+# tools/make_icon.py
+"""生成 1024x1024 的应用图标源图。
+
+形状参数严格照设计文档 9.6 节：
+  圆角半径 0.35 * S，超椭圆指数 n = 4
+  底色 #3451C6 纯色，前景纯白，右下柔投影
+只依赖 Pillow，不联网、不读外部素材。
+"""
+import math
+from PIL import Image, ImageDraw, ImageFilter
+
+S = 1024        # 输出边长
+SS = 4          # 超采样倍数，用于抗锯齿
+P = S * SS      # 绘制画布边长
+
+BG = (0x34, 0x51, 0xC6)
+FG = (255, 255, 255)
+SHADOW = (10, 16, 48)
+
+
+def legacy_rounded_points(size, r_ratio=0.35, n=4.0, steps=48):
+    """经典圆角轮廓：半径 r_ratio*size 的超椭圆圆角，指数 n。"""
+    r = r_ratio * size
+    exp = 2.0 / n
+    pts = [(r, 0.0), (size - r, 0.0)]
+
+    def corner(cx, cy, a0, a1):
+        for i in range(1, steps + 1):
+            a = a0 + (a1 - a0) * i / steps
+            c, s = math.cos(a), math.sin(a)
+            pts.append((cx + r * math.copysign(abs(c) ** exp, c),
+                        cy + r * math.copysign(abs(s) ** exp, s)))
+
+    corner(size - r, r, -math.pi / 2, 0.0)
+    pts.append((size, size - r))
+    corner(size - r, size - r, 0.0, math.pi / 2)
+    pts.append((r, size))
+    corner(r, size - r, math.pi / 2, math.pi)
+    pts.append((0.0, r))
+    corner(r, r, math.pi, math.pi * 1.5)
+    return pts
+
+
+def catmull_rom_closed(pts, seg=14):
+    """闭合 Catmull-Rom 样条插值：保证整条轮廓无折点。"""
+    n = len(pts)
+    out = []
+    for i in range(n):
+        p0, p1 = pts[(i - 1) % n], pts[i]
+        p2, p3 = pts[(i + 1) % n], pts[(i + 2) % n]
+        for s in range(seg):
+            t = s / seg
+            t2, t3 = t * t, t * t * t
+            out.append((
+                0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t
+                       + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                       + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+                0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t
+                       + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                       + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)))
+    return out
+
+
+# 漏斗轮廓关键点（100x100 设计网格，顺时针）
+FUNNEL_KEY = [(50, 15.5), (79, 23), (66, 44), (57.5, 59),
+              (50, 63.5), (42.5, 59), (34, 44), (21, 23)]
+# 两个递减的小方块：x, y, 宽, 高, 圆角
+BLOCKS = [(44.5, 68, 11, 11, 3.0), (47.0, 82, 6, 6, 1.8)]
+
+
+def main():
+    # 1) 底板：经典圆角 + 纯色
+    plate = Image.new("RGBA", (P, P), (0, 0, 0, 0))
+    ImageDraw.Draw(plate).polygon(legacy_rounded_points(P), fill=BG + (255,))
+
+    # 2) 前景单独一层，方便做投影
+    glyph = Image.new("RGBA", (P, P), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glyph)
+    # 设计网格 100x100；图形由 y=15.5 到 y=88，共 72.5 格，占整幅 0.72
+    scale = P * 0.72 / 72.5
+    ox = P * 0.5 - 50 * scale
+    oy = P * 0.5 - ((15.5 + 88) / 2) * scale
+
+    def tf(pts):
+        return [(ox + x * scale, oy + y * scale) for x, y in pts]
+
+    gd.polygon(tf(catmull_rom_closed(FUNNEL_KEY, seg=14)), fill=FG + (255,))
+    for (x, y, w, h, r) in BLOCKS:
+        gd.rounded_rectangle(
+            [ox + x * scale, oy + y * scale, ox + (x + w) * scale, oy + (y + h) * scale],
+            radius=r * scale, fill=FG + (255,))
+
+    # 3) 投影：染色 -> 偏移 -> 模糊 -> 降透明度
+    sh = Image.new("RGBA", (P, P), (0, 0, 0, 0))
+    sh.paste(Image.new("RGBA", (P, P), SHADOW + (255,)),
+             (int(0.0024 * P), int(0.024 * P)), glyph)
+    sh = sh.filter(ImageFilter.GaussianBlur(0.022 * P))
+    sh.putalpha(sh.getchannel("A").point(lambda a: int(a * 0.42)))
+
+    # 4) 合成并缩到目标尺寸
+    canvas = Image.alpha_composite(plate, sh)
+    canvas = Image.alpha_composite(canvas, glyph)
+    out = canvas.resize((S, S), Image.LANCZOS)
+    out.save("src-tauri/icons/source.png")
+    print("已生成 src-tauri/icons/source.png", out.size)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **步骤 2：运行脚本生成源图**
+
+```bash
+cd /d/code/PicSieve
+python tools/make_icon.py
+```
+
+预期：打印 `已生成 src-tauri/icons/source.png (1024, 1024)`。
+
+**人工检查这一步的产物**：打开 `source.png`，确认——四角是圆角不是直角、圆角看起来「饱满」而不是半圆、底色是纯色不是渐变、漏斗没有任何折角。任何一条不符就先改脚本，别往下走。
+
+- [ ] **步骤 3：由源图生成全套图标**
+
+```bash
+cd /d/code/PicSieve
+pnpm tauri icon src-tauri/icons/source.png
+```
+
+预期：`src-tauri/icons/` 下出现 `32x32.png`、`128x128.png`、`128x128@2x.png`、`icon.icns`、`icon.ico` 以及各尺寸 Windows Store 图标；`source.png` 保留。
+
+- [ ] **步骤 4：确认配置指向这些文件**
+
+`src-tauri/tauri.conf.json` 的 `bundle.icon` 应包含：
+
+```json
+"icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+```
+
+- [ ] **步骤 5：验证图标真的生效**
+
+```bash
+cd /d/code/PicSieve
+pnpm tauri dev
+```
+
+预期：窗口左上角与任务栏都显示新图标（不是 Tauri 默认图标）。看到后关闭。
+
+- [ ] **步骤 6：提交**
+
+```bash
+cd /d/code/PicSieve
+git add -A
+git commit -m "feat(icon): 经典圆角应用图标与生成脚本
+
+圆角半径 0.35S、超椭圆指数 4，底色纯色 #3451C6，白色漏斗前景。
+形状参数出处见设计文档 9.6 节。"
+git push origin main
+```
+
+---
+
+## 任务 21：打包与真机冒烟
 
 **文件：**
 - 修改：`src-tauri/tauri.conf.json`、`package.json`
@@ -4738,8 +4915,10 @@ git push origin main
              14 ── 15 ── 16
                     │
              17 ── 18 ──┐
-                        ├── 20
-              5 ── 19 ───┘
+                        │
+              5 ── 19 ───┼── 21
+                        │
+              1 ── 20 ───┘
 ```
 
 - 任务 7–10 依赖任务 2（数据库）与 4（扫描出的记录）。
@@ -4748,7 +4927,8 @@ git push origin main
 - 任务 16 依赖任务 11、12。
 - 任务 18 依赖任务 17。
 - 任务 19 依赖任务 5（设置读写已就绪）。
-- 任务 20 依赖全部。
+- 任务 20 依赖任务 1（项目骨架里已有 `src-tauri/icons` 目录）。
+- 任务 21 依赖全部。
 
 同一条链上的任务必须顺序执行；不同链（如 7–10 与 14）在各自前置完成后可并行。
 
