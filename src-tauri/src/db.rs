@@ -208,6 +208,43 @@ impl Db {
         )?;
         Ok(())
     }
+
+    pub fn files_needing_visual(&self) -> Result<Vec<FileRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM files WHERE status='normal' AND phash IS NULL AND decode_error IS NULL",
+        )?;
+        let rows = stmt.query_map([], row_to_record)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn set_visual(&self, id: i64, phash_hex: &str, gray: f64, at: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE files SET phash=?1, gray_score=?2, fingerprinted_at=?3 WHERE id=?4",
+            params![phash_hex, gray, at, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_decode_error(&self, id: i64, msg: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE files SET decode_error=?1 WHERE id=?2",
+            params![msg, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn count_visual_done(&self) -> Result<u64> {
+        let conn = self.conn.lock();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM files WHERE phash IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
+    }
 }
 
 fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {

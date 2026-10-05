@@ -67,3 +67,37 @@ pub async fn start_scan(app: AppHandle) -> std::result::Result<ScanStats, String
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub async fn start_fingerprint(app: AppHandle) -> std::result::Result<serde_json::Value, String> {
+    // 与 start_scan 同理：指纹计算是阻塞重活，必须丢进线程池，否则界面假死。
+    let (threads, db) = {
+        let state = app.state::<AppState>();
+        let threads = state.settings.lock().threads;
+        (threads, state.db.clone())
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cb = |s: crate::hashing::HashStats| {
+            let _ = app.emit(
+                "fingerprint://progress",
+                serde_json::json!({ "phase": "content", "stats": s }),
+            );
+        };
+        let content = crate::hashing::fingerprint_content(&db, threads, &mut cb)
+            .map_err(|e| e.to_string())?;
+
+        let mut cb2 = |s: crate::fingerprint::VisualStats| {
+            let _ = app.emit(
+                "fingerprint://progress",
+                serde_json::json!({ "phase": "visual", "stats": s }),
+            );
+        };
+        let visual = crate::fingerprint::fingerprint_visual(&db, threads, &mut cb2)
+            .map_err(|e| e.to_string())?;
+
+        Ok::<_, String>(serde_json::json!({ "content": content, "visual": visual }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

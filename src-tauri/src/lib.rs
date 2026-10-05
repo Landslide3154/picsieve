@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod fingerprint;
 pub mod gray;
 pub mod hashing;
 pub mod model;
@@ -38,6 +39,7 @@ pub fn run() {
             commands::save_settings,
             commands::start_scan,
             commands::cancel_scan,
+            commands::start_fingerprint,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
