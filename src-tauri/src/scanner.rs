@@ -95,7 +95,7 @@ pub fn scan(
 
     let mut stats = ScanStats::default();
     let mut seen = 0u64;
-    for ((path, _root), res) in candidates.iter().zip(results.into_iter()) {
+    for ((path, _root), res) in candidates.iter().zip(results) {
         seen += 1;
         match res {
             Ok(Some(rec)) => {
@@ -118,7 +118,7 @@ pub fn scan(
             }
             _ => stats.failed += 1,
         }
-        if seen % 500 == 0 || seen == total_hint {
+        if seen.is_multiple_of(500) || seen == total_hint {
             progress(ScanProgress {
                 seen,
                 total_hint,
