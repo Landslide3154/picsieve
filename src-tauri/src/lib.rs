@@ -30,6 +30,14 @@ pub fn run() {
             let db = db::Db::open(&app_data.join("picsieve.db")).expect("open db");
             db.migrate().expect("migrate");
             let s = settings::load(&app_data);
+            // 后台按上限回收缩略图缓存：缓存目录可能有几万个文件，不能卡启动
+            let cache_limit_mb = s.thumb_cache_limit_mb;
+            if let Ok(cache_root) = app.path().app_cache_dir() {
+                let cache = cache_root.join("thumbs");
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::thumb::trim_cache(&cache, cache_limit_mb.saturating_mul(1024 * 1024));
+                });
+            }
             app.manage(AppState {
                 db: Arc::new(db),
                 app_data,
@@ -54,6 +62,8 @@ pub fn run() {
             commands::restore_batch,
             commands::purge_batch,
             commands::list_quarantine_batches,
+            commands::thumb_cache_stats,
+            commands::trim_thumb_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

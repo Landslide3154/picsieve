@@ -5,11 +5,12 @@ import ActionBar from './components/ActionBar.vue'
 import DupGroupView from './components/DupGroupView.vue'
 import FilterPanel from './components/FilterPanel.vue'
 import QuarantineView from './components/QuarantineView.vue'
+import SettingsView from './components/SettingsView.vue'
 import ThumbGrid from './components/ThumbGrid.vue'
 import ScanProgress from './components/ScanProgress.vue'
 import { useLibrary } from './stores/library'
 
-const tab = ref<'library' | 'groups' | 'quarantine' | 'scan'>('library')
+const tab = ref<'library' | 'groups' | 'quarantine' | 'settings' | 'scan'>('library')
 const notice = ref('')
 const store = useLibrary()
 
@@ -43,12 +44,14 @@ function moveSelected() {
       <button :class="{ on: tab === 'groups' }" @click="tab = 'groups'">重复组</button>
       <button :class="{ on: tab === 'quarantine' }" @click="tab = 'quarantine'">隔离区</button>
       <button :class="{ on: tab === 'scan' }" @click="tab = 'scan'">扫描</button>
+      <button :class="{ on: tab === 'settings' }" @click="tab = 'settings'">设置</button>
     </nav>
     <span class="flex" />
     <span v-if="notice" class="notice">{{ notice }}</span>
   </header>
 
   <ScanProgress v-if="tab === 'scan'" />
+  <SettingsView v-else-if="tab === 'settings'" />
   <QuarantineView v-else-if="tab === 'quarantine'" />
   <DupGroupView v-else-if="tab === 'groups'" @move-to-quarantine="move" />
   <template v-else>

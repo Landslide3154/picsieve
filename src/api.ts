@@ -12,6 +12,7 @@ import type {
   ScanProgress,
   ScanStats,
   Settings,
+  TrimReport,
 } from './types'
 
 export const getSettings = () => invoke<Settings>('get_settings')
@@ -35,6 +36,9 @@ export const restoreBatch = (batch: string) => invoke<MoveReport>('restore_batch
 export const purgeBatch = (batch: string) => invoke<PurgeReport>('purge_batch', { batch })
 export const listQuarantineBatches = () =>
   invoke<QuarantineBatch[]>('list_quarantine_batches')
+
+export const thumbCacheStats = () => invoke<number>('thumb_cache_stats')
+export const trimThumbCache = () => invoke<TrimReport>('trim_thumb_cache')
 
 /** 取缩略图并转成可直接放进 <img src> 的 Blob URL。调用方负责在不用时 revoke。 */
 export async function fetchThumbUrl(fileId: number): Promise<string> {

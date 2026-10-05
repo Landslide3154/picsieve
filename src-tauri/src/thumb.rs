@@ -59,6 +59,56 @@ pub fn cache_size_bytes(cache_dir: &Path) -> u64 {
     total
 }
 
+#[derive(Debug, Default, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrimReport {
+    pub removed: u64,
+    pub freed: u64,
+    pub remaining: u64,
+}
+
+/// 把缓存压到上限以内：按文件修改时间从旧到新删（旧的缩略图被重新浏览时再算一次就行）。
+///
+/// 一次删到上限的 80%，留出余量，避免每打开一次软件就做一轮删除。
+/// 上限设为 0 视为不限。
+pub fn trim_cache(cache_dir: &Path, limit_bytes: u64) -> TrimReport {
+    let mut files: Vec<(std::time::SystemTime, PathBuf, u64)> = Vec::new();
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(cache_dir) {
+        for e in rd.flatten() {
+            let Ok(m) = e.metadata() else { continue };
+            if !m.is_file() {
+                continue;
+            }
+            let t = m.modified().unwrap_or(std::time::UNIX_EPOCH);
+            total += m.len();
+            files.push((t, e.path(), m.len()));
+        }
+    }
+
+    let mut report = TrimReport {
+        remaining: total,
+        ..Default::default()
+    };
+    if limit_bytes == 0 || total <= limit_bytes {
+        return report;
+    }
+
+    let target = limit_bytes / 10 * 8;
+    files.sort_by_key(|(t, _, _)| *t);
+    for (_, path, size) in files {
+        if report.remaining <= target {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            report.removed += 1;
+            report.freed += size;
+            report.remaining -= size;
+        }
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +161,42 @@ mod tests {
         make(&p, 200, 200);
         assert!(make_thumb(&p, &nested, 3, 55, 320).is_ok());
         assert!(nested.exists());
+    }
+
+    #[test]
+    fn trim_cache_brings_total_under_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..4 {
+            std::fs::write(dir.path().join(format!("{i}_1.jpg")), vec![7u8; 1000]).unwrap();
+            // 让 mtime 单调，删除顺序才确定
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let before = cache_size_bytes(dir.path());
+        assert_eq!(before, 4000);
+
+        let r = trim_cache(dir.path(), 2500);
+        assert!(r.removed >= 1, "超上限就该删");
+        assert!(cache_size_bytes(dir.path()) <= 2500, "必须回到上限以内");
+        assert_eq!(r.freed, before - cache_size_bytes(dir.path()));
+        assert_eq!(r.remaining, cache_size_bytes(dir.path()));
+    }
+
+    #[test]
+    fn trim_cache_is_noop_when_under_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("1_1.jpg"), vec![7u8; 1000]).unwrap();
+        let r = trim_cache(dir.path(), 10_000);
+        assert_eq!(r.removed, 0);
+        assert_eq!(r.remaining, 1000);
+        assert_eq!(cache_size_bytes(dir.path()), 1000);
+    }
+
+    #[test]
+    fn trim_cache_treats_zero_limit_as_unlimited() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("1_1.jpg"), vec![7u8; 1000]).unwrap();
+        let r = trim_cache(dir.path(), 0);
+        assert_eq!(r.removed, 0);
+        assert_eq!(r.remaining, 1000);
     }
 }

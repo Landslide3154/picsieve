@@ -251,3 +251,37 @@ pub fn list_quarantine_batches(
 ) -> std::result::Result<Vec<crate::model::QuarantineBatch>, String> {
     state.db.quarantine_batches().map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn thumb_cache_stats(app: AppHandle) -> std::result::Result<u64, String> {
+    let cache = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("thumbs");
+    tauri::async_runtime::spawn_blocking(move || crate::thumb::cache_size_bytes(&cache))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 按设置里的上限回收缩略图缓存。缓存目录可能有几万个文件，必须离开界面线程。
+#[tauri::command]
+pub async fn trim_thumb_cache(
+    app: AppHandle,
+) -> std::result::Result<crate::thumb::TrimReport, String> {
+    let (cache, limit_mb) = {
+        let state = app.state::<AppState>();
+        let limit = state.settings.lock().thumb_cache_limit_mb;
+        let cache = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| e.to_string())?
+            .join("thumbs");
+        (cache, limit)
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::thumb::trim_cache(&cache, limit_mb.saturating_mul(1024 * 1024))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}

@@ -89,3 +89,9 @@ export interface PurgeReport {
   purged: number
   bytes: number
 }
+
+export interface TrimReport {
+  removed: number
+  freed: number
+  remaining: number
+}
