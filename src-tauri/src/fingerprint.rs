@@ -40,18 +40,23 @@ pub fn fingerprint_visual(
                 .map(|r: &FileRecord| (r.id, decode_and_hash(Path::new(&r.path))))
                 .collect()
         });
+        // 攒批写库：解码是慢活，别让几万次单条 UPDATE 再雪上加霜
+        let mut ok_rows: Vec<(i64, String, f64)> = Vec::new();
+        let mut err_rows: Vec<(i64, String)> = Vec::new();
         for (id, res) in results {
             match res {
                 Ok((hex, gray)) => {
-                    db.set_visual(id, &hex, gray, now_secs())?;
+                    ok_rows.push((id, hex, gray));
                     stats.done += 1;
                 }
                 Err(e) => {
-                    db.set_decode_error(id, &e.to_string())?;
+                    err_rows.push((id, e.to_string()));
                     stats.failed += 1;
                 }
             }
         }
+        db.set_visual_many(&ok_rows, now_secs())?;
+        db.set_decode_error_many(&err_rows)?;
         progress(stats.clone());
     }
     stats.skipped = db.count_visual_done()?;

@@ -93,15 +93,17 @@ pub fn fingerprint_content(
                 })
                 .collect()
         });
+        let mut rows: Vec<(i64, String)> = Vec::new();
         for (id, h) in results {
             match h {
                 Ok(hex) => {
-                    db.set_content_hash(id, &hex)?;
+                    rows.push((id, hex));
                     stats.hashed += 1;
                 }
                 Err(_) => stats.failed += 1,
             }
         }
+        db.set_content_hash_many(&rows)?;
         progress(stats.clone());
     }
     Ok(stats)

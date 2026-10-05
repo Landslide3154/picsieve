@@ -7,24 +7,40 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 连上当前应用页面，返回 { evaluate, pageErrors, close }。 */
 export async function connect({ port = 9222, timeoutMs = 30000 } = {}) {
-  let page = null
+  let targets = []
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
       const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-      page =
-        list.find((t) => t.type === 'page' && t.url.includes('1420')) ||
-        list.find((t) => t.type === 'page')
-      if (page?.webSocketDebuggerUrl) break
+      targets = list.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl)
+      if (targets.length) break
     } catch {
       /* 端口还没起来 */
     }
     await sleep(500)
   }
-  if (!page?.webSocketDebuggerUrl) {
+  if (!targets.length) {
     throw new Error(`找不到 WebView2 调试目标（端口 ${port}）`)
   }
+  // WebView2 的浏览器进程会残留旧页面目标（例如上一次 dev 的 localhost:1420），
+  // 所以要挑一个真正能求值的，不能盲取第一个。
+  const ordered = [
+    ...targets.filter((t) => /tauri\.localhost|^tauri:/.test(t.url)),
+    ...targets.filter((t) => !/tauri\.localhost|^tauri:/.test(t.url)),
+  ]
 
+  let lastErr = null
+  for (const page of ordered) {
+    try {
+      return await openPage(page)
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  throw new Error(`所有调试目标都无法求值：${lastErr}`)
+}
+
+async function openPage(page) {
   const ws = new WebSocket(page.webSocketDebuggerUrl)
   await new Promise((res, rej) => {
     ws.addEventListener('open', res, { once: true })
@@ -75,6 +91,9 @@ export async function connect({ port = 9222, timeoutMs = 30000 } = {}) {
     }
     return r.result.value
   }
+
+  // 探活：连上就死掉的目标会让后续每一步都报「上下文已销毁」
+  await evaluate('1 + 1')
 
   return {
     evaluate,

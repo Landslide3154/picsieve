@@ -31,6 +31,11 @@ CREATE INDEX IF NOT EXISTS idx_files_short_side ON files(short_side);
 CREATE INDEX IF NOT EXISTS idx_files_content    ON files(content_hash);
 CREATE INDEX IF NOT EXISTS idx_files_phash      ON files(phash);
 CREATE INDEX IF NOT EXISTS idx_files_pid        ON files(pid);
+-- 曾经给 (status, short_side) 加过复合索引想让「命中数」更快，结果适得其反：
+-- 查询是 `... ORDER BY size DESC LIMIT 300`，有了这个过滤索引后 SQLite 会先按 short_side
+-- 取出一大片再排序，丢掉了原本「按 size 有序扫描、凑够 300 条就停」的路子，
+-- 列表查询从 3ms 涨到 1.7s。所以这里保持最小索引集，不加复合索引。
+DROP INDEX IF EXISTS idx_files_status_size;
 
 CREATE TABLE IF NOT EXISTS dup_groups (
   id           INTEGER PRIMARY KEY,
@@ -79,6 +84,58 @@ pub struct Db {
     conn: Mutex<Connection>,
 }
 
+const UPSERT_FILE_SQL: &str = r#"INSERT INTO files
+   (path, root, size, mtime, ext, format, width, height, short_side, pid, artist,
+    scanned_at, content_hash, phash, gray_score, decode_error, fingerprinted_at, status)
+   VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+   ON CONFLICT(path) DO UPDATE SET
+     root=excluded.root, size=excluded.size, mtime=excluded.mtime,
+     ext=excluded.ext, format=excluded.format, width=excluded.width,
+     height=excluded.height, short_side=excluded.short_side,
+     pid=excluded.pid, artist=excluded.artist, scanned_at=excluded.scanned_at,
+     content_hash=NULL, phash=NULL, gray_score=NULL,
+     decode_error=NULL, fingerprinted_at=NULL,
+     status='normal'"#;
+
+fn upsert_params(rec: &FileRecord) -> Vec<rusqlite::types::Value> {
+    use rusqlite::types::Value;
+    let status = if rec.status.is_empty() {
+        "normal"
+    } else {
+        rec.status.as_str()
+    };
+    vec![
+        Value::Text(rec.path.clone()),
+        Value::Text(rec.root.clone()),
+        Value::Integer(rec.size),
+        Value::Integer(rec.mtime),
+        rec.ext.clone().map(Value::Text).unwrap_or(Value::Null),
+        rec.format.clone().map(Value::Text).unwrap_or(Value::Null),
+        rec.width.map(Value::Integer).unwrap_or(Value::Null),
+        rec.height.map(Value::Integer).unwrap_or(Value::Null),
+        rec.compute_short_side()
+            .map(Value::Integer)
+            .unwrap_or(Value::Null),
+        rec.pid.map(Value::Integer).unwrap_or(Value::Null),
+        rec.artist.clone().map(Value::Text).unwrap_or(Value::Null),
+        Value::Integer(now_secs()),
+        rec.content_hash
+            .clone()
+            .map(Value::Text)
+            .unwrap_or(Value::Null),
+        rec.phash.clone().map(Value::Text).unwrap_or(Value::Null),
+        rec.gray_score.map(Value::Real).unwrap_or(Value::Null),
+        rec.decode_error
+            .clone()
+            .map(Value::Text)
+            .unwrap_or(Value::Null),
+        rec.fingerprinted_at
+            .map(Value::Integer)
+            .unwrap_or(Value::Null),
+        Value::Text(status.to_string()),
+    ]
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -120,47 +177,10 @@ impl Db {
     /// 3. 同一条记录若被扫到，status 一律回到 `normal`：文件既然还躺在盘上，
     ///    就不该停留在 quarantined 上。否则「彻底清空后同路径又下了一张图」会永远看不见。
     pub fn upsert_file(&self, rec: &FileRecord) -> Result<i64> {
-        let short_side = rec.compute_short_side();
-        let now = now_secs();
-        let status = if rec.status.is_empty() {
-            "normal"
-        } else {
-            rec.status.as_str()
-        };
         let conn = self.conn.lock();
         conn.execute(
-            r#"INSERT INTO files
-               (path, root, size, mtime, ext, format, width, height, short_side, pid, artist,
-                scanned_at, content_hash, phash, gray_score, decode_error, fingerprinted_at, status)
-               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
-               ON CONFLICT(path) DO UPDATE SET
-                 root=excluded.root, size=excluded.size, mtime=excluded.mtime,
-                 ext=excluded.ext, format=excluded.format, width=excluded.width,
-                 height=excluded.height, short_side=excluded.short_side,
-                 pid=excluded.pid, artist=excluded.artist, scanned_at=excluded.scanned_at,
-                 content_hash=NULL, phash=NULL, gray_score=NULL,
-                 decode_error=NULL, fingerprinted_at=NULL,
-                 status='normal'"#,
-            params![
-                rec.path,
-                rec.root,
-                rec.size,
-                rec.mtime,
-                rec.ext,
-                rec.format,
-                rec.width,
-                rec.height,
-                short_side,
-                rec.pid,
-                rec.artist,
-                now,
-                rec.content_hash,
-                rec.phash,
-                rec.gray_score,
-                rec.decode_error,
-                rec.fingerprinted_at,
-                status
-            ],
+            UPSERT_FILE_SQL,
+            rusqlite::params_from_iter(upsert_params(rec)),
         )?;
         let id: i64 = conn.query_row(
             "SELECT id FROM files WHERE path = ?1",
@@ -168,6 +188,26 @@ impl Db {
             |r| r.get(0),
         )?;
         Ok(id)
+    }
+
+    /// 批量写入：整批走一个事务 + 一条预编译语句。
+    ///
+    /// 十几万张图逐条提交时，每条都要重新解析一遍 SQL 并单独提交，实测这一项就能吃掉
+    /// 扫描的一半时间；批量化之后扫描才真正受限于读图片头。
+    pub fn upsert_files(&self, recs: &[FileRecord]) -> Result<()> {
+        if recs.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(UPSERT_FILE_SQL)?;
+            for rec in recs {
+                stmt.execute(rusqlite::params_from_iter(upsert_params(rec)))?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn get_file(&self, id: i64) -> Result<Option<FileRecord>> {
@@ -232,6 +272,22 @@ impl Db {
         Ok(())
     }
 
+    pub fn set_content_hash_many(&self, rows: &[(i64, String)]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("UPDATE files SET content_hash = ?1 WHERE id = ?2")?;
+            for (id, hex) in rows {
+                stmt.execute(params![hex, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn files_needing_visual(&self) -> Result<Vec<FileRecord>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
@@ -250,12 +306,47 @@ impl Db {
         Ok(())
     }
 
+    /// 批量写视觉指纹，整批一个事务（理由同 `upsert_files`）。
+    pub fn set_visual_many(&self, rows: &[(i64, String, f64)], at: i64) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE files SET phash=?1, gray_score=?2, fingerprinted_at=?3 WHERE id=?4",
+            )?;
+            for (id, hex, gray) in rows {
+                stmt.execute(params![hex, gray, at, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn set_decode_error(&self, id: i64, msg: &str) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(
             "UPDATE files SET decode_error=?1 WHERE id=?2",
             params![msg, id],
         )?;
+        Ok(())
+    }
+
+    pub fn set_decode_error_many(&self, rows: &[(i64, String)]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("UPDATE files SET decode_error=?1 WHERE id=?2")?;
+            for (id, msg) in rows {
+                stmt.execute(params![msg, id])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
