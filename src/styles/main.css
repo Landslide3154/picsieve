@@ -1,9 +1,29 @@
+/* 图筛的设计令牌与基础控件样式。
+   组件里不要再各写各的按钮/输入框，统一用这里的类。 */
 :root {
-  --line: rgba(128, 128, 128, 0.28);
   --bg: #1b1d21;
-  --fg: #e6e6e6;
+  --panel: #212429;
+  --card: #262a30;
+  --sunken: #191b1f;
+  --line: rgba(150, 160, 175, 0.22);
+  --line-strong: rgba(150, 160, 175, 0.38);
+  --fg: #e8eaf0;
+  --dim: #9aa3b2;
+  --dimmer: #6f7787;
   --accent: #4a90d9;
+  --accent-bright: #6cb0ff;
+  --accent-soft: rgba(74, 144, 217, 0.18);
   --danger: #c0553f;
+  --danger-soft: rgba(192, 85, 63, 0.18);
+  --ok: #4fb477;
+  --warn: #d9a54a;
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 8px 22px rgba(0, 0, 0, 0.5);
+  --speed: 120ms;
+  color-scheme: dark;
 }
 
 * {
@@ -20,24 +40,268 @@ body,
 #app {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 body {
   background: var(--bg);
   color: var(--fg);
   font:
-    14px/1.6 system-ui,
+    14px/1.55 system-ui,
     'Segoe UI',
     'Microsoft YaHei',
     sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-button {
+/* 数字对齐：张数、体积、尺寸这些会上下比较的地方都用等宽数字 */
+.num,
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 按钮 ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--fg);
+  border-radius: var(--radius);
+  padding: 5px 12px;
   font: inherit;
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    background-color var(--speed) ease,
+    border-color var(--speed) ease,
+    color var(--speed) ease;
+}
+.btn:hover:not(:disabled) {
+  background: #2d323a;
+  border-color: var(--line-strong);
+}
+.btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.btn.ghost {
+  background: transparent;
+}
+.btn.ghost:hover:not(:disabled) {
+  background: rgba(150, 160, 175, 0.12);
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-bright);
+  border-color: var(--accent-bright);
+}
+.btn.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+.btn.danger:hover:not(:disabled) {
+  background: #d2634b;
+  border-color: #d2634b;
+}
+.btn.link {
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  color: var(--accent-bright);
+}
+.btn.link:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+.btn.sm {
+  padding: 3px 9px;
+  font-size: 12px;
 }
 
-h1 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 20px 24px 0;
+/* 图标按钮必须有 aria-label（无障碍规范），样式在这里统一 */
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.icon-btn:hover {
+  background: rgba(150, 160, 175, 0.14);
+  color: var(--fg);
+}
+
+/* ---------- 输入框 ---------- */
+.field,
+input[type='text'],
+input[type='number'],
+input[type='search'],
+select {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--fg);
+  padding: 5px 9px;
+  font: inherit;
+  outline: none;
+  transition: border-color var(--speed) ease;
+}
+input[type='number'] {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+select {
+  cursor: pointer;
+}
+.field:hover,
+input:hover,
+select:hover {
+  border-color: var(--line-strong);
+}
+
+/* 焦点必须看得见（键盘用户靠它导航） */
+:focus-visible,
+.btn:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
+/* ---------- 标签 / 开关 ---------- */
+.chip {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--dim);
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background-color var(--speed) ease,
+    color var(--speed) ease,
+    border-color var(--speed) ease;
+}
+.chip:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+.chip.on {
+  background: var(--accent-soft);
+  border-color: rgba(108, 176, 255, 0.5);
+  color: var(--fg);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.check:hover {
+  color: var(--fg);
+}
+.check input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+.check.on {
+  color: var(--fg);
+}
+
+/* ---------- 排版小件 ---------- */
+.muted {
+  color: var(--dim);
+}
+.dim {
+  color: var(--dimmer);
+}
+.small {
+  font-size: 12px;
+}
+.tiny {
+  font-size: 11px;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+.error-text {
+  color: #e88b76;
+}
+.ok-text {
+  color: var(--ok);
+}
+
+/* ---------- 滚动条（WebView2 默认的太扎眼） ---------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 160, 175, 0.28);
+  border-radius: 6px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 160, 175, 0.45);
+}
+
+/* ---------- 顶部提示条 ---------- */
+.toast {
+  position: fixed;
+  right: 18px;
+  bottom: 62px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #101317;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  padding: 9px 14px;
+  box-shadow: var(--shadow-2);
+  font-size: 13px;
+}
+
+/* 尊重系统的「减少动态效果」设置 */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
 }

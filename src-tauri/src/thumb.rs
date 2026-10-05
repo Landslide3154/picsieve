@@ -1,6 +1,37 @@
 use crate::error::{AppError, Result};
 use image::imageops::FilterType;
+use parking_lot::{Condvar, Mutex};
 use std::path::{Path, PathBuf};
+
+/// 同时最多解码几张。
+///
+/// 一屏缩略图会并发请求几十张，而单张 4000×6000 的图解码后是 70 MB 级别的内存；
+/// 不限制的话内存会瞬间冲到几个 GB，CPU 也全被解码占满、界面跟着卡。
+const MAX_CONCURRENT_THUMBS: usize = 6;
+
+static SLOTS_TAKEN: Mutex<usize> = Mutex::new(0);
+static SLOTS_CV: Condvar = Condvar::new();
+
+/// 占一个解码位，用完自动归还（即使中途 panic 也会归还）。
+pub fn with_thumb_slot<T>(f: impl FnOnce() -> T) -> T {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let mut n = SLOTS_TAKEN.lock();
+            *n = n.saturating_sub(1);
+            SLOTS_CV.notify_one();
+        }
+    }
+    {
+        let mut taken = SLOTS_TAKEN.lock();
+        while *taken >= MAX_CONCURRENT_THUMBS {
+            SLOTS_CV.wait(&mut taken);
+        }
+        *taken += 1;
+    }
+    let _guard = Guard;
+    f()
+}
 
 /// 缓存文件名带上 mtime：源文件被替换后自动失效，不需要额外的清理逻辑。
 pub fn thumb_path(cache_dir: &Path, id: i64, mtime: i64) -> PathBuf {

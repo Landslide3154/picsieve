@@ -504,17 +504,20 @@ impl Db {
         )?)
     }
 
-    /// 短边分布：每 100px 一档，共 40 档（≥4000px 归入最后一档）。
+    /// 短边分布：每 200px 一档，共 40 档（0–8000px，≥7800 归入最后一档）。
     pub fn histogram_short_side(&self) -> Result<crate::model::Histogram> {
+        const STEP: i64 = 200;
         const BUCKETS: usize = 40;
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT CASE WHEN short_side >= 4000 THEN 39 ELSE short_side / 100 END AS b,
+        let mut stmt = conn.prepare(&format!(
+            "SELECT CASE WHEN short_side >= {top} THEN {last} ELSE short_side / {STEP} END AS b,
                     COUNT(*)
              FROM files
              WHERE status='normal' AND short_side IS NOT NULL
              GROUP BY b",
-        )?;
+            top = STEP * (BUCKETS as i64 - 1),
+            last = BUCKETS - 1,
+        ))?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
         let mut buckets = vec![0u64; BUCKETS];
         for row in rows {
@@ -523,7 +526,10 @@ impl Db {
                 buckets[b as usize] = n as u64;
             }
         }
+        let mut edges: Vec<i64> = (0..BUCKETS as i64).map(|i| i * STEP).collect();
+        edges.push(STEP * BUCKETS as i64);
         Ok(crate::model::Histogram {
+            edges,
             max: buckets.iter().copied().max().unwrap_or(0),
             buckets,
         })
@@ -552,7 +558,10 @@ impl Db {
                 buckets[b as usize] = n as u64;
             }
         }
+        let mut edges: Vec<i64> = (0..BUCKETS as u32).map(|i| 1i64 << (10 + i)).collect();
+        edges.push(1i64 << (10 + BUCKETS as u32));
         Ok(crate::model::Histogram {
+            edges,
             max: buckets.iter().copied().max().unwrap_or(0),
             buckets,
         })
@@ -815,10 +824,10 @@ mod tests {
             })
             .unwrap();
         };
-        // 短边：250px -> 第 2 档；1000px -> 第 10 档；1500px -> 第 15 档；5000px -> 最后一档(39)
+        // 短边每 200px 一档：250 -> 第 1 档；1000 -> 第 5 档；1500 -> 第 7 档；9000 -> 最后一档(39)
         seed("a.jpg", 1024 * 1024, 250);
         seed("b.jpg", 1024 * 1024, 1500);
-        seed("c.jpg", 1024 * 1024, 5000);
+        seed("c.jpg", 1024 * 1024, 9000);
         // 体积：512 字节与 100 字节 -> 第 0 档；1MB -> 第 10 档；2MB -> 第 11 档
         seed("d.jpg", 512, 1000);
         seed("e.jpg", 100, 1000);
@@ -826,14 +835,18 @@ mod tests {
 
         let h = db.histogram_short_side().expect("short");
         assert_eq!(h.buckets.len(), 40);
-        assert_eq!(h.buckets[2], 1, "250px 应落在第 2 档（每档 100px）");
-        assert_eq!(h.buckets[10], 3, "1000px 的三个文件都在第 10 档");
-        assert_eq!(h.buckets[15], 1, "1500px 应落在第 15 档");
-        assert_eq!(h.buckets[39], 1, "5000px 应归入最后一档");
+        assert_eq!(h.edges.len(), 41);
+        assert_eq!(h.edges[40], 8000, "短边刻度到 8000px");
+        assert_eq!(h.buckets[1], 1, "250px 应落在第 1 档（每档 200px）");
+        assert_eq!(h.buckets[5], 3, "1000px 的三个文件都在第 5 档");
+        assert_eq!(h.buckets[7], 1, "1500px 应落在第 7 档");
+        assert_eq!(h.buckets[39], 1, "9000px 超过刻度上限，归入最后一档");
         assert_eq!(h.max, 3, "最高的一档是 3 个");
 
         let s = db.histogram_size().expect("size");
         assert_eq!(s.buckets.len(), 20);
+        assert_eq!(s.edges.len(), 21);
+        assert_eq!(s.edges[0], 1024, "体积刻度从 1KB 起");
         assert_eq!(s.buckets[0], 2, "512 字节与 100 字节都落在第 0 档（<1KB）");
         assert_eq!(s.buckets[10], 3, "1MB = 2^20，正好是第 10 档的下界");
         assert_eq!(s.buckets[11], 1, "2MB 落在第 11 档");

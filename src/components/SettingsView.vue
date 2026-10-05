@@ -8,6 +8,8 @@ const msg = ref('')
 const err = ref('')
 const cacheBytes = ref(0)
 
+const emit = defineEmits<{ (e: 'saved'): void }>()
+
 function fmt(bytes: number): string {
   if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB'
   return (bytes / 1048576).toFixed(1) + ' MB'
@@ -88,6 +90,7 @@ async function save() {
       t.removed > 0
         ? `已保存；顺手回收了 ${t.removed} 个旧缩略图，释放 ${fmt(t.freed)}`
         : '已保存'
+    emit('saved')
   } catch (e) {
     err.value = String(e)
   }

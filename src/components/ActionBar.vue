@@ -1,27 +1,27 @@
 <script setup lang="ts">
+import { fmtBytes, fmtCount } from '../format'
 import { useLibrary } from '../stores/library'
 
 const store = useLibrary()
-defineEmits<{ (e: 'move-to-quarantine'): void }>()
+defineEmits<{
+  (e: 'move-to-quarantine'): void
+  (e: 'select-all'): void
+}>()
 </script>
 
 <template>
   <footer class="bar">
-    <span>
-      已选 <strong>{{ store.selectedCount }}</strong> 张（{{
-        (store.selectedBytes / 1048576).toFixed(1)
-      }}
-      MB）
+    <span class="num">
+      已选 <b>{{ fmtCount(store.selectedCount) }}</b> 张 ·
+      <b>{{ fmtBytes(store.selectedBytes) }}</b>
     </span>
-    <button v-if="store.selectedCount" class="link" @click="store.clearSelection()">
+    <button class="btn ghost sm" @click="$emit('select-all')">全选已加载</button>
+    <button class="btn ghost sm" :disabled="!store.selectedCount" @click="store.clearSelection()">
       取消选择
     </button>
-    <span class="flex" />
-    <button
-      class="danger"
-      :disabled="!store.selectedCount"
-      @click="$emit('move-to-quarantine')"
-    >
+    <span class="grow" />
+    <span class="dim tiny">单击选中 · Shift 连选 · Ctrl+A 全选 · 空格预览 · Delete 移入隔离区</span>
+    <button class="btn danger" :disabled="!store.selectedCount" @click="$emit('move-to-quarantine')">
       移到隔离区
     </button>
   </footer>
@@ -31,29 +31,12 @@ defineEmits<{ (e: 'move-to-quarantine'): void }>()
 .bar {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   padding: 8px 14px;
   border-top: 1px solid var(--line);
+  background: var(--panel);
 }
-.link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  cursor: pointer;
-}
-.flex {
+.grow {
   flex: 1;
-}
-.danger {
-  background: var(--danger);
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  padding: 5px 16px;
-  cursor: pointer;
-}
-.danger:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 </style>

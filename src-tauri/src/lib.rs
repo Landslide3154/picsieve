@@ -55,6 +55,7 @@ pub fn run() {
             commands::query_files_cmd,
             commands::count_files_cmd,
             commands::get_thumb,
+            commands::get_preview,
             commands::open_external,
             commands::reveal_in_explorer,
             commands::histogram_cmd,

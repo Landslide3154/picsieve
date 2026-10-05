@@ -97,6 +97,7 @@ async function openPage(page) {
 
   return {
     evaluate,
+    send,
     pageErrors,
     setEventHandler: (fn) => {
       onEvent = fn

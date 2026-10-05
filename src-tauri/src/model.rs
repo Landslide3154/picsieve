@@ -109,10 +109,14 @@ pub struct LibraryStats {
     pub last_scan_at: i64,
 }
 
-/// 筛选栏的分布直方图。`buckets` 的下标含义由前端按同一套规则翻译成文字。
+/// 筛选栏的分布直方图。
+///
+/// `buckets[i]` 对应区间 `[edges[i], edges[i + 1])`，最后一档上不封顶。
+/// 前端按 edges 在滑块轨道上摆柱子，所以两种刻度（等差/等比）都能对齐。
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Histogram {
+    pub edges: Vec<i64>,
     pub buckets: Vec<u64>,
     pub max: u64,
 }

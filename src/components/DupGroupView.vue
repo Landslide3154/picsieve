@@ -1,20 +1,41 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { fetchThumbUrl, listDupGroups, rebuildGroups, setKeeper } from '../api'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  countDupGroups,
+  fetchThumbUrl,
+  listDupGroups,
+  openExternal,
+  rebuildGroups,
+  setKeeper,
+} from '../api'
+import { fmtBytes, fmtCount } from '../format'
 import type { FileRecord, GroupView } from '../types'
 
 const emit = defineEmits<{ (e: 'move-to-quarantine', ids: number[]): void }>()
 
 const groups = ref<GroupView[]>([])
+const groupTotal = ref(0)
 const index = ref(0)
 const kind = ref<'exact' | 'similar'>('exact')
-const focus = ref(-1) // -1 = 保留项，0..n-1 = 第 n 个待删成员
+const focus = ref(-1)
 const loading = ref(false)
 const msg = ref('')
 const error = ref('')
 const thumbs = ref<Map<number, string>>(new Map())
 
 const current = computed(() => groups.value[index.value])
+const removable = computed(() => (current.value ? current.value.members.map((m) => m.id) : []))
+
+function fmt(bytes: number): string {
+  return fmtBytes(bytes)
+}
+
+/** 汉明距离换算成「多少像」，比「偏差 4」好懂 */
+function similarity(distance: number | undefined): string {
+  if (distance === undefined) return ''
+  const pct = Math.max(0, Math.min(100, Math.round((1 - distance / 64) * 100)))
+  return pct + '% 像'
+}
 
 async function loadThumbs(files: FileRecord[]) {
   const next = new Map(thumbs.value)
@@ -39,7 +60,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    groups.value = await listDupGroups(kind.value, 0, 300)
+    const [list, total] = await Promise.all([
+      listDupGroups(kind.value, 0, 500),
+      countDupGroups(kind.value),
+    ])
+    groups.value = list
+    groupTotal.value = total
     index.value = 0
     onGroupChange()
   } catch (e) {
@@ -78,9 +104,6 @@ function prev() {
   }
 }
 
-/** 当前组里除保留项以外的成员 id —— 也就是「这 N 张」 */
-const removable = computed(() => (current.value ? current.value.members.map((m) => m.id) : []))
-
 async function keepAs(fileId: number) {
   const g = current.value
   if (!g || g.keep.id === fileId) return
@@ -90,6 +113,7 @@ async function keepAs(fileId: number) {
   if (picked) {
     g.keep = picked
     g.members = [old, ...g.members.filter((m) => m.id !== fileId)]
+    if (g.distances.length) g.distances = [0, ...g.distances.filter((_, i) => g.members[i + 1]?.id !== old.id)]
   }
   focus.value = -1
 }
@@ -116,33 +140,44 @@ onMounted(() => {
   window.addEventListener('keydown', onKey)
 })
 onUnmounted(() => window.removeEventListener('keydown', onKey))
+
+// 换类型时重载
+watch(kind, () => void load())
 </script>
 
 <template>
   <section class="wrap">
     <header class="head">
-      <strong v-if="groups.length">第 {{ index + 1 }} 组 / 共 {{ groups.length }} 组</strong>
-      <span v-else-if="!loading">还没有重复组，先跑一次指纹再点「重建分组」</span>
-      <span v-else>加载中…</span>
-      <span class="flex" />
-      <span v-if="msg" class="msg">{{ msg }}</span>
-      <select v-model="kind" @change="load">
+      <strong v-if="groups.length" class="num">
+        第 {{ index + 1 }} 组 / 共 {{ fmtCount(groupTotal) }} 组
+      </strong>
+      <span v-else-if="!loading" class="dim">还没有重复组，先跑一次指纹再点「重建分组」</span>
+      <span v-else class="dim">加载中…</span>
+
+      <span v-if="current" class="save num">
+        这一组能省 {{ fmt(current.savings) }}
+      </span>
+
+      <span class="grow" />
+      <span v-if="msg" class="muted small">{{ msg }}</span>
+      <select v-model="kind" aria-label="重复组类型">
         <option value="exact">一模一样</option>
         <option value="similar">看着像</option>
       </select>
-      <button :disabled="loading" @click="rebuild">重建分组</button>
+      <button class="btn" :disabled="loading" @click="rebuild">重建分组</button>
     </header>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="error" class="error-text pad">{{ error }}</p>
 
     <div v-if="current" class="row">
       <article class="card keep" :class="{ focus: focus === -1 }">
-        <img :src="thumbs.get(current.keep.id) ?? ''" alt="" />
+        <img :src="thumbs.get(current.keep.id) ?? ''" alt="" @dblclick="openExternal(current.keep.path)" />
         <div class="meta">
-          <strong>{{ current.keep.width }} × {{ current.keep.height }}</strong>
-          <span>{{ (current.keep.size / 1048576).toFixed(2) }} MB</span>
-          <code>{{ current.keep.path }}</code>
+          <strong class="num">{{ current.keep.width }} × {{ current.keep.height }}</strong>
+          <span class="num">{{ fmt(current.keep.size) }} · {{ (current.keep.ext ?? '').toUpperCase() }}</span>
+          <code class="truncate" :title="current.keep.path">{{ current.keep.path }}</code>
           <em>✓ 保留这张</em>
+          <span v-if="current.keepReason" class="reason">建议理由：{{ current.keepReason }}</span>
         </div>
       </article>
 
@@ -152,30 +187,30 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         class="card"
         :class="{ focus: focus === i }"
       >
-        <img :src="thumbs.get(m.id) ?? ''" alt="" />
+        <img :src="thumbs.get(m.id) ?? ''" alt="" @dblclick="openExternal(m.path)" />
         <div class="meta">
-          <strong>{{ m.width }} × {{ m.height }}</strong>
-          <span>{{ (m.size / 1048576).toFixed(2) }} MB</span>
-          <span v-if="current.distances[i] !== undefined" class="dist">
-            相似度偏差 {{ current.distances[i] }}
+          <strong class="num">{{ m.width }} × {{ m.height }}</strong>
+          <span class="num">{{ fmt(m.size) }} · {{ (m.ext ?? '').toUpperCase() }}</span>
+          <span v-if="current.distances[i] !== undefined" class="dist num">
+            {{ similarity(current.distances[i]) }}
           </span>
-          <code>{{ m.path }}</code>
-          <button @click="keepAs(m.id)">改留这张</button>
+          <code class="truncate" :title="m.path">{{ m.path }}</code>
+          <button class="btn ghost sm" @click="keepAs(m.id)">改留这张</button>
         </div>
       </article>
     </div>
 
     <footer class="foot">
-      <button :disabled="index === 0" @click="prev">← 上一组</button>
-      <button :disabled="index >= groups.length - 1" @click="next">下一组 →</button>
-      <span class="hint">← → 换组 · ↑ ↓ 选成员 · 空格改留这张</span>
-      <span class="flex" />
+      <button class="btn" :disabled="index === 0" @click="prev">← 上一组</button>
+      <button class="btn" :disabled="index >= groups.length - 1" @click="next">下一组 →</button>
+      <span class="dim tiny">← → 换组 · ↑ ↓ 选成员 · 空格改留这张 · 双击图片用系统程序打开</span>
+      <span class="grow" />
       <button
-        class="danger"
+        class="btn danger"
         :disabled="!removable.length"
         @click="emit('move-to-quarantine', removable)"
       >
-        这 {{ removable.length }} 张移入隔离区
+        保留这张，其余 {{ removable.length }} 张移入隔离区
       </button>
     </footer>
   </section>
@@ -195,12 +230,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   padding: 10px 16px;
   border-bottom: 1px solid var(--line);
 }
-.flex {
+.grow {
   flex: 1;
 }
-.msg {
+.save {
   font-size: 12px;
-  color: var(--accent);
+  color: var(--ok);
+}
+.pad {
+  padding: 8px 16px;
 }
 .row {
   display: flex;
@@ -211,78 +249,59 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   align-items: flex-start;
 }
 .card {
-  width: 260px;
+  width: 268px;
   flex: none;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--card);
+  transition:
+    box-shadow var(--speed) ease,
+    transform var(--speed) ease;
 }
 .card.keep {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-bright);
 }
 .card.focus {
-  outline: 2px dashed var(--accent);
-  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--warn);
 }
 .card img {
   width: 100%;
-  height: 300px;
+  height: 320px;
   object-fit: contain;
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(0, 0, 0, 0.28);
   display: block;
+  cursor: zoom-in;
 }
 .meta {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 8px;
+  padding: 9px 10px;
   font-size: 12px;
 }
 .meta code {
-  word-break: break-all;
-  opacity: 0.7;
+  color: var(--dim);
   font-size: 11px;
 }
 .meta em {
-  color: var(--accent);
+  color: var(--accent-bright);
   font-style: normal;
   font-weight: 600;
 }
+.reason {
+  color: var(--dim);
+  font-size: 11px;
+}
 .dist {
-  opacity: 0.6;
+  color: var(--dim);
 }
 .foot {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
+  gap: 10px;
+  padding: 9px 16px;
   border-top: 1px solid var(--line);
-}
-button {
-  border: 1px solid var(--line);
-  background: transparent;
-  color: inherit;
-  border-radius: 4px;
-  padding: 4px 12px;
-  cursor: pointer;
-}
-button:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.danger {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #fff;
-}
-.hint {
-  font-size: 11px;
-  opacity: 0.55;
-}
-.error {
-  color: #e05c4b;
-  padding: 0 16px;
 }
 </style>

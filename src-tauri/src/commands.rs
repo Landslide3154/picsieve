@@ -201,34 +201,88 @@ pub fn count_files_cmd(
     crate::query::count_files_gray(&state.db, &filter, gray).map_err(|e| e.to_string())
 }
 
+/// 取缩略图。
+///
+/// **必须离开界面主线程**：同步命令会在 WebView 的主线程上执行，一张大图解码要几百毫秒，
+/// 一屏几十张就是十几秒的界面假死（用户反馈的「拖滑块卡顿」很大一部分来自这里）。
+/// 同时用 `with_thumb_slot` 限制并发，避免几十张大图同时解码把内存顶到几个 GB。
 #[tauri::command]
-pub fn get_thumb(
+pub async fn get_thumb(
     app: AppHandle,
-    state: State<'_, AppState>,
     file_id: i64,
 ) -> std::result::Result<tauri::ipc::Response, String> {
-    let rec = state
-        .db
-        .get_file(file_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "文件不存在".to_string())?;
-    let max_edge = state.settings.lock().thumb_max_edge;
-    let cache = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("thumbs");
-    let p = crate::thumb::make_thumb(
-        std::path::Path::new(&rec.path),
-        &cache,
-        rec.id,
-        rec.mtime,
-        max_edge,
-    )
-    .map_err(|e| e.to_string())?;
-    // 用 Response 直接回二进制：几千张缩略图若走 JSON 数组会白烧 CPU 和内存
-    let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
-    Ok(tauri::ipc::Response::new(bytes))
+    let (rec, max_edge, cache) = {
+        let state = app.state::<AppState>();
+        let rec = state
+            .db
+            .get_file(file_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "文件不存在".to_string())?;
+        let max_edge = state.settings.lock().thumb_max_edge;
+        let cache = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| e.to_string())?
+            .join("thumbs");
+        (rec, max_edge, cache)
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = crate::thumb::with_thumb_slot(|| {
+            crate::thumb::make_thumb(
+                std::path::Path::new(&rec.path),
+                &cache,
+                rec.id,
+                rec.mtime,
+                max_edge,
+            )
+        })
+        .map_err(|e| e.to_string())?;
+        // 用 Response 直接回二进制：几千张缩略图若走 JSON 数组会白烧 CPU 和内存
+        let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 空格预览用的大图：长边 1600，单独一份缓存目录（原图不复制、不改动）。
+#[tauri::command]
+pub async fn get_preview(
+    app: AppHandle,
+    file_id: i64,
+) -> std::result::Result<tauri::ipc::Response, String> {
+    let (rec, cache) = {
+        let state = app.state::<AppState>();
+        let rec = state
+            .db
+            .get_file(file_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "文件不存在".to_string())?;
+        let cache = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| e.to_string())?
+            .join("previews");
+        (rec, cache)
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = crate::thumb::with_thumb_slot(|| {
+            crate::thumb::make_thumb(
+                std::path::Path::new(&rec.path),
+                &cache,
+                rec.id,
+                rec.mtime,
+                1600,
+            )
+        })
+        .map_err(|e| e.to_string())?;
+        let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

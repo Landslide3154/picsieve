@@ -38,6 +38,9 @@ pub struct ScanProgress {
     pub seen: u64,
     pub total_hint: u64,
     pub current: String,
+    /// 已经跑了多少毫秒（界面据此算吞吐与剩余时间）
+    pub elapsed_ms: u64,
+    pub per_second: f64,
 }
 
 pub fn is_image_ext(ext: &str) -> bool {
@@ -67,6 +70,8 @@ pub fn scan(
         stats.cancelled = true;
         return Ok(stats);
     }
+
+    let started = std::time::Instant::now();
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(opts.threads)
@@ -148,10 +153,14 @@ pub fn scan(
             Err(_) => stats.failed += 1,
         }
         if seen.is_multiple_of(500) || seen == total_hint {
+            let elapsed = started.elapsed();
+            let secs = elapsed.as_secs_f64();
             progress(ScanProgress {
                 seen,
                 total_hint,
                 current: path.to_string_lossy().to_string(),
+                elapsed_ms: elapsed.as_millis() as u64,
+                per_second: if secs > 0.05 { seen as f64 / secs } else { 0.0 },
             });
         }
     }

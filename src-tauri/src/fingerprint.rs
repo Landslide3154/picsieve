@@ -15,6 +15,8 @@ pub struct VisualStats {
     pub skipped: u64,
     pub failed: u64,
     pub cancelled: bool,
+    /// 这一轮要处理的张数（界面用来显示「已完成 / 总数」）
+    pub total: u64,
 }
 
 /// 第二遍指纹：解码缩略图，算 pHash 与灰度分数。
@@ -29,7 +31,10 @@ pub fn fingerprint_visual(
     progress: &mut dyn FnMut(VisualStats),
 ) -> Result<VisualStats> {
     let pending = db.files_needing_visual()?;
-    let mut stats = VisualStats::default();
+    let mut stats = VisualStats {
+        total: pending.len() as u64,
+        ..Default::default()
+    };
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads.max(1))

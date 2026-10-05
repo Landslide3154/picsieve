@@ -37,6 +37,8 @@ export interface ScanProgress {
   seen: number
   totalHint: number
   current: string
+  elapsedMs: number
+  perSecond: number
 }
 
 export interface ScanStats {
@@ -45,6 +47,7 @@ export interface ScanStats {
   updated: number
   skipped: number
   failed: number
+  cancelled: boolean
 }
 
 export interface Settings {
@@ -64,6 +67,10 @@ export interface GroupView {
   keep: FileRecord
   members: FileRecord[]
   distances: number[]
+  /** 这一组处理掉能省下的字节数 */
+  savings: number
+  /** 为什么建议留这张 */
+  keepReason: string
 }
 
 /** 隔离区里的一批文件 */
@@ -72,6 +79,19 @@ export interface QuarantineBatch {
   count: number
   bytes: number
   movedAt: number
+}
+
+export interface LibraryStats {
+  total: number
+  bytes: number
+  lastScanAt: number
+}
+
+export interface Histogram {
+  /** 档位边界：buckets[i] 对应 [edges[i], edges[i+1])，最后一档上不封顶 */
+  edges: number[]
+  buckets: number[]
+  max: number
 }
 
 export interface RebuildResult {
@@ -94,4 +114,9 @@ export interface TrimReport {
   removed: number
   freed: number
   remaining: number
+}
+
+export interface FingerprintResult {
+  content: { hashed: number; failed: number; cancelled: boolean }
+  visual: { done: number; failed: number; skipped: number; cancelled: boolean }
 }
