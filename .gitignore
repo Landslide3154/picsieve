@@ -30,3 +30,7 @@ Desktop.ini
 
 src-tauri/gen/
 
+
+# 端到端冒烟用的受控测试图片与中间产物
+.e2e/
+

@@ -79,17 +79,10 @@ pub fn scan(
     let total_hint = candidates.len() as u64;
     let known = db.path_fingerprints()?;
 
-    let results: Vec<std::result::Result<Option<FileRecord>, ()>> = pool.install(|| {
+    let results: Vec<std::result::Result<FileRecord, ()>> = pool.install(|| {
         candidates
             .par_iter()
-            .map(
-                |(path, root)| -> std::result::Result<Option<FileRecord>, ()> {
-                    match build_record(path, root) {
-                        Ok(rec) => Ok(Some(rec)),
-                        Err(_) => Err(()),
-                    }
-                },
-            )
+            .map(|(path, root)| build_record(path, root).map_err(|_| ()))
             .collect()
     });
 
@@ -98,7 +91,7 @@ pub fn scan(
     for ((path, _root), res) in candidates.iter().zip(results) {
         seen += 1;
         match res {
-            Ok(Some(rec)) => {
+            Ok(rec) => {
                 let key = path.to_string_lossy().to_string();
                 let unchanged = known
                     .get(&key)
@@ -116,7 +109,8 @@ pub fn scan(
                     }
                 }
             }
-            _ => stats.failed += 1,
+            // 只统计「连元数据都读不到」的文件；图片头坏了的不算这里，见 build_record
+            Err(_) => stats.failed += 1,
         }
         if seen.is_multiple_of(500) || seen == total_hint {
             progress(ScanProgress {
@@ -145,21 +139,13 @@ fn build_record(path: &Path, root: &Path) -> Result<FileRecord> {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase());
 
-    // 只读图片头拿宽高与真实格式
-    let reader = image::ImageReader::open(path)
-        .map_err(|e| AppError::io(path, e))?
-        .with_guessed_format()
-        .map_err(|e| AppError::io(path, e))?;
-    let format = reader
-        .format()
-        .map(|f| format!("{f:?}").to_ascii_lowercase());
-    let (width, height) = reader
-        .into_dimensions()
-        .map(|(w, h)| (Some(w as i64), Some(h as i64)))
-        .map_err(|e| AppError::Image {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+    // 只读图片头拿宽高与真实格式。
+    // 头坏掉的文件**照样入库**并记下 decode_error：规格第 3.2 节要求「是否解码失败」
+    // 是一个可筛的维度，第 12 节要求记录后继续。若在这里直接丢弃，界面上就永远查不到它们。
+    let (format, width, height, decode_error) = match read_header(path) {
+        Ok((format, w, h)) => (format, Some(w as i64), Some(h as i64), None),
+        Err(e) => (None, None, None, Some(e.to_string())),
+    };
 
     Ok(FileRecord {
         id: 0,
@@ -177,11 +163,27 @@ fn build_record(path: &Path, root: &Path) -> Result<FileRecord> {
         content_hash: None,
         phash: None,
         gray_score: None,
-        decode_error: None,
+        decode_error,
         scanned_at: Some(now_secs()),
         fingerprinted_at: None,
         status: "normal".into(),
     })
+}
+
+/// 只读图片头，返回真实格式与宽高。
+fn read_header(path: &Path) -> Result<(Option<String>, u32, u32)> {
+    let reader = image::ImageReader::open(path)
+        .map_err(|e| AppError::io(path, e))?
+        .with_guessed_format()
+        .map_err(|e| AppError::io(path, e))?;
+    let format = reader
+        .format()
+        .map(|f| format!("{f:?}").to_ascii_lowercase());
+    let (w, h) = reader.into_dimensions().map_err(|e| AppError::Image {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    Ok((format, w, h))
 }
 
 #[cfg(test)]
@@ -257,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_image_is_recorded_not_fatal() {
+    fn corrupt_image_is_recorded_as_decode_error() {
         let dir = tempfile::tempdir().expect("tmp");
         std::fs::write(dir.path().join("broken.jpg"), b"\xFF\xD8\xFF\xE0garbage").expect("write");
         let db = Db::open_in_memory().expect("db");
@@ -269,7 +271,28 @@ mod tests {
             &mut |_| {},
         )
         .expect("scan");
-        assert_eq!(stats.failed, 1);
-        assert_eq!(stats.inserted, 0);
+
+        assert_eq!(
+            stats.inserted, 1,
+            "头读不出的文件也要入库，否则「只看读不出的」永远是空的"
+        );
+        assert_eq!(stats.failed, 0, "failed 只统计连元数据都读不到的");
+        let rec = db
+            .find_by_path(&dir.path().join("broken.jpg").to_string_lossy())
+            .expect("q")
+            .expect("some");
+        assert!(rec.decode_error.is_some(), "必须记下解码失败原因");
+        assert_eq!((rec.width, rec.height), (None, None));
+    }
+
+    #[test]
+    fn unreadable_path_counts_as_failed() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let missing = dir.path().join("gone.png");
+        std::fs::write(&missing, b"x").expect("write");
+        std::fs::remove_file(&missing).expect("remove");
+        // 目录本身仍存在，因此校验通过；但候选清单里塞不进不存在的文件，
+        // 这里直接验证 build_record 对缺失文件返回 Err
+        assert!(build_record(&missing, dir.path()).is_err());
     }
 }
