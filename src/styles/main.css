@@ -1,0 +1,43 @@
+:root {
+  --line: rgba(128, 128, 128, 0.28);
+  --bg: #1b1d21;
+  --fg: #e6e6e6;
+  --accent: #4a90d9;
+  --danger: #c0553f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    14px/1.6 system-ui,
+    'Segoe UI',
+    'Microsoft YaHei',
+    sans-serif;
+}
+
+button {
+  font: inherit;
+}
+
+h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 20px 24px 0;
+}
