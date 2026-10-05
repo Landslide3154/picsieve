@@ -119,3 +119,31 @@ pub fn count_files_cmd(
     let gray = state.settings.lock().gray_threshold;
     crate::query::count_files_gray(&state.db, &filter, gray).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn get_thumb(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    file_id: i64,
+) -> std::result::Result<Vec<u8>, String> {
+    let rec = state
+        .db
+        .get_file(file_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "文件不存在".to_string())?;
+    let max_edge = state.settings.lock().thumb_max_edge;
+    let cache = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("thumbs");
+    let p = crate::thumb::make_thumb(
+        std::path::Path::new(&rec.path),
+        &cache,
+        rec.id,
+        rec.mtime,
+        max_edge,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::read(&p).map_err(|e| e.to_string())
+}

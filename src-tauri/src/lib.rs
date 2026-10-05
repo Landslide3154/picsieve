@@ -11,6 +11,7 @@ pub mod phash;
 pub mod query;
 pub mod scanner;
 pub mod settings;
+pub mod thumb;
 
 use commands::AppState;
 use std::sync::atomic::AtomicBool;
@@ -44,6 +45,7 @@ pub fn run() {
             commands::start_fingerprint,
             commands::query_files_cmd,
             commands::count_files_cmd,
+            commands::get_thumb,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
