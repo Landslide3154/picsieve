@@ -5,6 +5,7 @@ use crate::nameparse;
 use rayon::prelude::*;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 只处理这些扩展名的文件；其余只计数不入库。
 const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp"];
@@ -47,16 +48,24 @@ pub fn is_image_ext(ext: &str) -> bool {
 ///
 /// 已入库且 `size` 与 `mtime` 都没变的对象直接跳过（增量）。
 /// 单个文件出错只记录、不中断整体。
+/// `cancel` 为真时尽快停下，返回已完成的部分结果（`stats.cancelled = true`）。
 pub fn scan(
     db: &Db,
     roots: &[PathBuf],
     opts: &ScanOptions,
+    cancel: &AtomicBool,
     progress: &mut dyn FnMut(ScanProgress),
 ) -> Result<ScanStats> {
     for r in roots {
         if !r.is_dir() {
             return Err(AppError::NotADirectory(r.clone()));
         }
+    }
+
+    let mut stats = ScanStats::default();
+    if cancel.load(Ordering::Relaxed) {
+        stats.cancelled = true;
+        return Ok(stats);
     }
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -68,6 +77,9 @@ pub fn scan(
     let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
     for root in roots {
         for entry in jwalk::WalkDir::new(root).skip_hidden(false) {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
             let entry = match entry {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -89,7 +101,13 @@ pub fn scan(
     let results: Vec<std::result::Result<FileRecord, ()>> = pool.install(|| {
         candidates
             .par_iter()
-            .map(|(path, root)| build_record(path, root).map_err(|_| ()))
+            .map(|(path, root)| {
+                // 每个文件都查一次取消标记：读图片头是这一步最慢的地方，早停收益最大
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(());
+                }
+                build_record(path, root).map_err(|_| ())
+            })
             .collect()
     });
 
@@ -98,6 +116,10 @@ pub fn scan(
     // 攒批写库：逐条提交会让十几万次 INSERT 各自提交一次，实测能吃掉一半扫描时间
     let mut pending: Vec<FileRecord> = Vec::with_capacity(WRITE_BATCH);
     for ((path, _root), res) in candidates.iter().zip(results) {
+        if cancel.load(Ordering::Relaxed) {
+            stats.cancelled = true;
+            break;
+        }
         seen += 1;
         match res {
             Ok(rec) => {
@@ -266,6 +288,7 @@ mod tests {
             &db,
             &[root.to_path_buf()],
             &ScanOptions::default(),
+            &AtomicBool::new(false),
             &mut |_| {},
         )
         .expect("scan");
@@ -294,6 +317,7 @@ mod tests {
             &db,
             &[dir.path().to_path_buf()],
             &ScanOptions::default(),
+            &AtomicBool::new(false),
             &mut |_| {},
         )
         .expect("first");
@@ -301,6 +325,7 @@ mod tests {
             &db,
             &[dir.path().to_path_buf()],
             &ScanOptions::default(),
+            &AtomicBool::new(false),
             &mut |_| {},
         )
         .expect("second");
@@ -319,6 +344,7 @@ mod tests {
             &db,
             &[dir.path().to_path_buf()],
             &ScanOptions::default(),
+            &AtomicBool::new(false),
             &mut |_| {},
         )
         .expect("scan");
@@ -334,6 +360,25 @@ mod tests {
             .expect("some");
         assert!(rec.decode_error.is_some(), "必须记下解码失败原因");
         assert_eq!((rec.width, rec.height), (None, None));
+    }
+
+    #[test]
+    fn cancel_before_start_returns_immediately() {
+        let dir = tempfile::tempdir().expect("tmp");
+        make_png(&dir.path().join("a.png"), 60, 60);
+        let db = Db::open_in_memory().expect("db");
+        db.migrate().expect("migrate");
+        let cancel = AtomicBool::new(true);
+        let stats = scan(
+            &db,
+            &[dir.path().to_path_buf()],
+            &ScanOptions::default(),
+            &cancel,
+            &mut |_| {},
+        )
+        .expect("scan");
+        assert!(stats.cancelled, "带取消标记进来应当立即返回");
+        assert_eq!(stats.inserted, 0);
     }
 
     #[test]

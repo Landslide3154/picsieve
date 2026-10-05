@@ -6,6 +6,7 @@ use rusqlite::params;
 use serde::Serialize;
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +14,7 @@ pub struct HashStats {
     pub groups: u64,
     pub hashed: u64,
     pub failed: u64,
+    pub cancelled: bool,
 }
 
 /// 打开文件，失败时最多重试 3 次、每次间隔 200 ms。
@@ -66,9 +68,11 @@ pub fn candidate_groups(db: &Db) -> Result<Vec<Vec<FileRecord>>> {
 }
 
 /// 第一遍指纹：只对候选组读取内容、算 BLAKE3、写回数据库。
+/// `cancel` 为真时在每组之间检查一次，尽快停下（已完成的部分已落库，可续算）。
 pub fn fingerprint_content(
     db: &Db,
     threads: usize,
+    cancel: &AtomicBool,
     progress: &mut dyn FnMut(HashStats),
 ) -> Result<HashStats> {
     let groups = candidate_groups(db)?;
@@ -83,6 +87,10 @@ pub fn fingerprint_content(
         .map_err(|e| AppError::Other(format!("线程池创建失败: {e}")))?;
 
     for group in &groups {
+        if cancel.load(Ordering::Relaxed) {
+            stats.cancelled = true;
+            break;
+        }
         let results: Vec<(i64, std::result::Result<String, ()>)> = pool.install(|| {
             group
                 .par_iter()
@@ -183,7 +191,7 @@ mod tests {
         db.upsert_file(&rec(&a.to_string_lossy(), 4096)).unwrap();
         db.upsert_file(&rec(&b.to_string_lossy(), 4096)).unwrap();
 
-        let stats = fingerprint_content(&db, 2, &mut |_| {}).unwrap();
+        let stats = fingerprint_content(&db, 2, &AtomicBool::new(false), &mut |_| {}).unwrap();
         assert_eq!(stats.hashed, 2);
         assert_eq!(stats.groups, 1);
     }

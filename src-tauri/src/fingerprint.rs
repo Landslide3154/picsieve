@@ -6,6 +6,7 @@ use crate::phash::{phash_u64, to_hex};
 use rayon::prelude::*;
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,15 +14,18 @@ pub struct VisualStats {
     pub done: u64,
     pub skipped: u64,
     pub failed: u64,
+    pub cancelled: bool,
 }
 
 /// 第二遍指纹：解码缩略图，算 pHash 与灰度分数。
 ///
 /// 只处理 `phash IS NULL AND decode_error IS NULL` 的文件，因此天然支持断点续算。
 /// GIF 由 `image` 解码器默认取第一帧。
+/// `cancel` 为真时在每批之间检查一次，尽快停下（已完成的已落库，可续算）。
 pub fn fingerprint_visual(
     db: &Db,
     threads: usize,
+    cancel: &AtomicBool,
     progress: &mut dyn FnMut(VisualStats),
 ) -> Result<VisualStats> {
     let pending = db.files_needing_visual()?;
@@ -34,6 +38,10 @@ pub fn fingerprint_visual(
 
     let batch = 512;
     for chunk in pending.chunks(batch) {
+        if cancel.load(Ordering::Relaxed) {
+            stats.cancelled = true;
+            break;
+        }
         let results: Vec<(i64, Result<(String, f64)>)> = pool.install(|| {
             chunk
                 .par_iter()
@@ -113,7 +121,7 @@ mod tests {
         seed(&db, &color, 200, 150);
         seed(&db, &gray, 200, 150);
 
-        let stats = fingerprint_visual(&db, 2, &mut |_| {}).unwrap();
+        let stats = fingerprint_visual(&db, 2, &AtomicBool::new(false), &mut |_| {}).unwrap();
         assert_eq!(stats.done, 2);
 
         let c = db.find_by_path(&color.to_string_lossy()).unwrap().unwrap();
@@ -131,8 +139,8 @@ mod tests {
         db.migrate().unwrap();
         seed(&db, &p, 120, 120);
 
-        let first = fingerprint_visual(&db, 1, &mut |_| {}).unwrap();
-        let second = fingerprint_visual(&db, 1, &mut |_| {}).unwrap();
+        let first = fingerprint_visual(&db, 1, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        let second = fingerprint_visual(&db, 1, &AtomicBool::new(false), &mut |_| {}).unwrap();
         assert_eq!(first.done, 1);
         assert_eq!(second.done, 0, "已算过的图不应重算");
         assert_eq!(second.skipped, 1);
@@ -146,6 +154,6 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.migrate().unwrap();
         seed(&db, &p, 64, 64);
-        assert!(fingerprint_visual(&db, 1, &mut |_| {}).is_ok());
+        assert!(fingerprint_visual(&db, 1, &AtomicBool::new(false), &mut |_| {}).is_ok());
     }
 }

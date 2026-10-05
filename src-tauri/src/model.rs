@@ -80,6 +80,8 @@ pub struct ScanStats {
     pub updated: u64,
     pub skipped: u64,
     pub failed: u64,
+    /// 是否被用户中途取消（取消时其余计数是「已完成」的部分结果）
+    pub cancelled: bool,
 }
 
 /// 重复组的界面视图：保留项 + 其余成员 + 各成员到基准的距离。
@@ -91,6 +93,28 @@ pub struct GroupView {
     pub keep: FileRecord,
     pub members: Vec<FileRecord>,
     pub distances: Vec<i64>,
+    /// 这一组处理掉能省下的字节数（除保留项以外成员的体积合计）
+    pub savings: i64,
+    /// 为什么建议留这一张，给用户看的短句
+    pub keep_reason: String,
+}
+
+/// 库内总体情况，顶栏用来显示数据新旧。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStats {
+    pub total: i64,
+    pub bytes: i64,
+    /// 最近一次扫描时间（秒）；从未扫描过为 0
+    pub last_scan_at: i64,
+}
+
+/// 筛选栏的分布直方图。`buckets` 的下标含义由前端按同一套规则翻译成文字。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Histogram {
+    pub buckets: Vec<u64>,
+    pub max: u64,
 }
 
 /// 隔离区里的一批文件。

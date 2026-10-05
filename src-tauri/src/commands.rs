@@ -32,8 +32,10 @@ pub fn save_settings(
     Ok(())
 }
 
+/// 取消正在跑的扫描或指纹计算。两个任务共用同一个标记：
+/// 同一时刻只会有一个在跑，取消谁都是取消当前这个。
 #[tauri::command]
-pub fn cancel_scan(state: State<'_, AppState>) {
+pub fn cancel_job(state: State<'_, AppState>) {
     state.cancel.store(true, Ordering::SeqCst);
 }
 
@@ -61,8 +63,14 @@ pub async fn start_scan(app: AppHandle) -> std::result::Result<ScanStats, String
         let mut on_progress = |p: scanner::ScanProgress| {
             let _ = app.emit("scan://progress", p);
         };
-        scanner::scan(&db, &roots, &ScanOptions { threads }, &mut on_progress)
-            .map_err(|e| e.to_string())
+        scanner::scan(
+            &db,
+            &roots,
+            &ScanOptions { threads },
+            &cancel,
+            &mut on_progress,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -71,11 +79,12 @@ pub async fn start_scan(app: AppHandle) -> std::result::Result<ScanStats, String
 #[tauri::command]
 pub async fn start_fingerprint(app: AppHandle) -> std::result::Result<serde_json::Value, String> {
     // 与 start_scan 同理：指纹计算是阻塞重活，必须丢进线程池，否则界面假死。
-    let (threads, db) = {
+    let (threads, db, cancel) = {
         let state = app.state::<AppState>();
         let threads = state.settings.lock().threads;
-        (threads, state.db.clone())
+        (threads, state.db.clone(), state.cancel.clone())
     };
+    cancel.store(false, Ordering::SeqCst);
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut cb = |s: crate::hashing::HashStats| {
@@ -84,7 +93,7 @@ pub async fn start_fingerprint(app: AppHandle) -> std::result::Result<serde_json
                 serde_json::json!({ "phase": "content", "stats": s }),
             );
         };
-        let content = crate::hashing::fingerprint_content(&db, threads, &mut cb)
+        let content = crate::hashing::fingerprint_content(&db, threads, &cancel, &mut cb)
             .map_err(|e| e.to_string())?;
 
         let mut cb2 = |s: crate::fingerprint::VisualStats| {
@@ -93,13 +102,85 @@ pub async fn start_fingerprint(app: AppHandle) -> std::result::Result<serde_json
                 serde_json::json!({ "phase": "visual", "stats": s }),
             );
         };
-        let visual = crate::fingerprint::fingerprint_visual(&db, threads, &mut cb2)
+        let visual = crate::fingerprint::fingerprint_visual(&db, threads, &cancel, &mut cb2)
             .map_err(|e| e.to_string())?;
 
         Ok::<_, String>(serde_json::json!({ "content": content, "visual": visual }))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 用系统默认程序打开图片（双击缩略图）。
+///
+/// 走 `cmd /C start "" "<路径>"`：路径来自数据库（由扫描得到），Windows 文件名本身不含引号，
+/// 这里再用 raw_arg 手工加引号，避免文件名里的 `&` 被 cmd 当成命令分隔符。
+#[tauri::command]
+pub fn open_external(path: String) -> std::result::Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let safe = path.replace('"', "");
+    std::process::Command::new("cmd")
+        .arg("/C")
+        .raw_arg(format!("start \"\" \"{safe}\""))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打不开这个文件：{e}"))
+}
+
+/// 在资源管理器里定位到这个文件。
+#[tauri::command]
+pub fn reveal_in_explorer(path: String) -> std::result::Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{path}"))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打不开资源管理器：{e}"))
+}
+
+/// 筛选栏的分布直方图。kind = "size" 或 "shortSide"。
+#[tauri::command]
+pub async fn histogram_cmd(
+    app: AppHandle,
+    kind: String,
+) -> std::result::Result<crate::model::Histogram, String> {
+    let db = app.state::<AppState>().db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let r = if kind == "size" {
+            db.histogram_size()
+        } else {
+            db.histogram_short_side()
+        };
+        r.map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 顶栏用的库内总体情况。
+#[tauri::command]
+pub fn library_stats(
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::model::LibraryStats, String> {
+    state.db.library_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn count_dup_groups(
+    state: State<'_, AppState>,
+    kind: String,
+) -> std::result::Result<i64, String> {
+    state.db.count_groups(&kind).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn quarantine_batch_files(
+    state: State<'_, AppState>,
+    batch: String,
+) -> std::result::Result<Vec<FileRecord>, String> {
+    state
+        .db
+        .quarantine_batch_files(&batch)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

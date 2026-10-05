@@ -449,6 +449,10 @@ impl Db {
             };
             let rows = self.group_member_rows(gid)?;
             let distances = rows.iter().map(|(_, d)| *d).collect();
+            let savings = rows.iter().map(|(r, _)| r.size).sum();
+            let mut all: Vec<FileRecord> = rows.iter().map(|(r, _)| r.clone()).collect();
+            all.push(keep.clone());
+            let keep_reason = crate::grouper::keeper_reason(&all, &keep);
             let members = rows.into_iter().map(|(r, _)| r).collect();
             out.push(crate::model::GroupView {
                 group_id: gid,
@@ -456,6 +460,8 @@ impl Db {
                 keep,
                 members,
                 distances,
+                savings,
+                keep_reason,
             });
         }
         Ok(out)
@@ -487,6 +493,96 @@ impl Db {
             params![file_id, group_id],
         )?;
         Ok(())
+    }
+
+    pub fn count_groups(&self, kind: &str) -> Result<i64> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM dup_groups WHERE kind=?1",
+            params![kind],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// 短边分布：每 100px 一档，共 40 档（≥4000px 归入最后一档）。
+    pub fn histogram_short_side(&self) -> Result<crate::model::Histogram> {
+        const BUCKETS: usize = 40;
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT CASE WHEN short_side >= 4000 THEN 39 ELSE short_side / 100 END AS b,
+                    COUNT(*)
+             FROM files
+             WHERE status='normal' AND short_side IS NOT NULL
+             GROUP BY b",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut buckets = vec![0u64; BUCKETS];
+        for row in rows {
+            let (b, n) = row?;
+            if b >= 0 && (b as usize) < BUCKETS {
+                buckets[b as usize] = n as u64;
+            }
+        }
+        Ok(crate::model::Histogram {
+            max: buckets.iter().copied().max().unwrap_or(0),
+            buckets,
+        })
+    }
+
+    /// 体积分布：从 1KB 起每个 2 的幂一档，共 20 档（<1KB 归第 0 档，≥512MB 归最后一档）。
+    pub fn histogram_size(&self) -> Result<crate::model::Histogram> {
+        const BUCKETS: usize = 20;
+        let mut case = String::from("CASE");
+        for i in 0..BUCKETS - 1 {
+            let threshold: u64 = 1u64 << (10 + i + 1);
+            case.push_str(&format!(" WHEN size < {threshold} THEN {i}"));
+        }
+        case.push_str(&format!(" ELSE {} END", BUCKETS - 1));
+
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {case} AS b, COUNT(*) FROM files
+             WHERE status='normal' AND size IS NOT NULL GROUP BY b"
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut buckets = vec![0u64; BUCKETS];
+        for row in rows {
+            let (b, n) = row?;
+            if b >= 0 && (b as usize) < BUCKETS {
+                buckets[b as usize] = n as u64;
+            }
+        }
+        Ok(crate::model::Histogram {
+            max: buckets.iter().copied().max().unwrap_or(0),
+            buckets,
+        })
+    }
+
+    pub fn library_stats(&self) -> Result<crate::model::LibraryStats> {
+        let conn = self.conn.lock();
+        let (total, bytes, last): (i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size),0), COALESCE(MAX(scanned_at),0)
+             FROM files WHERE status='normal'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        Ok(crate::model::LibraryStats {
+            total,
+            bytes,
+            last_scan_at: last,
+        })
+    }
+
+    /// 某一批隔离区里的文件（供界面展开查看）。
+    pub fn quarantine_batch_files(&self, batch: &str) -> Result<Vec<FileRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT f.* FROM quarantine q JOIN files f ON f.id = q.file_id
+             WHERE q.batch_id=?1 AND q.restored_at IS NULL
+             ORDER BY f.size DESC",
+        )?;
+        let rows = stmt.query_map(params![batch], row_to_record)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     pub fn record_quarantine(
@@ -700,5 +796,46 @@ mod tests {
         assert!(got.content_hash.is_none(), "内容变了，旧内容指纹必须作废");
         assert!(got.phash.is_none(), "内容变了，旧视觉指纹必须作废");
         assert!(got.gray_score.is_none());
+    }
+
+    /// 直方图按固定档位统计，界面的滑块刻度依赖它。
+    #[test]
+    fn histograms_bucket_by_fixed_ranges() {
+        let db = Db::open_in_memory().expect("open");
+        db.migrate().expect("migrate");
+        let seed = |name: &str, size: i64, short: i64| {
+            db.upsert_file(&FileRecord {
+                path: name.into(),
+                root: "r".into(),
+                size,
+                mtime: 1,
+                width: Some(short),
+                height: Some(short),
+                ..Default::default()
+            })
+            .unwrap();
+        };
+        // 短边：250px -> 第 2 档；1000px -> 第 10 档；1500px -> 第 15 档；5000px -> 最后一档(39)
+        seed("a.jpg", 1024 * 1024, 250);
+        seed("b.jpg", 1024 * 1024, 1500);
+        seed("c.jpg", 1024 * 1024, 5000);
+        // 体积：512 字节与 100 字节 -> 第 0 档；1MB -> 第 10 档；2MB -> 第 11 档
+        seed("d.jpg", 512, 1000);
+        seed("e.jpg", 100, 1000);
+        seed("f.jpg", 2 * 1024 * 1024, 1000);
+
+        let h = db.histogram_short_side().expect("short");
+        assert_eq!(h.buckets.len(), 40);
+        assert_eq!(h.buckets[2], 1, "250px 应落在第 2 档（每档 100px）");
+        assert_eq!(h.buckets[10], 3, "1000px 的三个文件都在第 10 档");
+        assert_eq!(h.buckets[15], 1, "1500px 应落在第 15 档");
+        assert_eq!(h.buckets[39], 1, "5000px 应归入最后一档");
+        assert_eq!(h.max, 3, "最高的一档是 3 个");
+
+        let s = db.histogram_size().expect("size");
+        assert_eq!(s.buckets.len(), 20);
+        assert_eq!(s.buckets[0], 2, "512 字节与 100 字节都落在第 0 档（<1KB）");
+        assert_eq!(s.buckets[10], 3, "1MB = 2^20，正好是第 10 档的下界");
+        assert_eq!(s.buckets[11], 1, "2MB 落在第 11 档");
     }
 }

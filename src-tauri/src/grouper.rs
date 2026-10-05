@@ -58,6 +58,26 @@ pub fn persist_exact(db: &Db, groups: &[ExactGroup]) -> Result<()> {
     Ok(())
 }
 
+/// 给界面用的一句话：为什么建议留这一张。
+///
+/// 与 `choose_keeper` 的判定顺序一一对应，别改一处忘另一处。
+pub fn keeper_reason(candidates: &[FileRecord], keep: &FileRecord) -> String {
+    let others: Vec<&FileRecord> = candidates.iter().filter(|c| c.path != keep.path).collect();
+    if others.is_empty() {
+        return String::new();
+    }
+    if keep.pid.is_some() && others.iter().any(|c| c.pid.is_none()) {
+        return "文件名里带作品 ID".into();
+    }
+    if others.iter().any(|c| c.path.len() > keep.path.len()) {
+        return "路径更短".into();
+    }
+    if others.iter().any(|c| c.mtime > keep.mtime) {
+        return "收藏时间更早".into();
+    }
+    "内容完全相同，留哪张都一样".into()
+}
+
 #[derive(Debug, Clone)]
 pub struct VisualRec {
     pub id: i64,
@@ -474,6 +494,30 @@ mod tests {
         assert_eq!(groups.len(), 1, "应只得到一组：大图 + 缩略版");
         let member_count = groups[0].members.len();
         assert_eq!(member_count, 1, "副本不该作为成员再出现一次");
+    }
+
+    #[test]
+    fn keeper_reason_explains_the_choice() {
+        let with_pid = rec("12345678_p0.png", "h", Some(12345678), 5);
+        let without = rec("thumb_x.png", "h", None, 1);
+        assert_eq!(
+            keeper_reason(&[with_pid.clone(), without.clone()], &with_pid),
+            "文件名里带作品 ID"
+        );
+
+        let long_path = rec("sub/dir/deep/aaa.jpg", "h", None, 1);
+        let short_path = rec("aaa.jpg", "h", None, 9);
+        assert_eq!(
+            keeper_reason(&[long_path.clone(), short_path.clone()], &short_path),
+            "路径更短"
+        );
+
+        let late = rec("late9.jpg", "h", None, 99);
+        let early = rec("early.jpg", "h", None, 5);
+        assert_eq!(
+            keeper_reason(&[late.clone(), early.clone()], &early),
+            "收藏时间更早"
+        );
     }
 
     /// 手工构造 137,000 条随机 pHash，测量 group_similar 的纯计算耗时。
