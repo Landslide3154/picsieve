@@ -161,7 +161,11 @@ impl Db {
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?),
+                (
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                ),
             ))
         })?;
         let mut map = std::collections::HashMap::new();
