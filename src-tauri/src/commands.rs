@@ -127,11 +127,20 @@ pub fn open_external(path: String) -> std::result::Result<(), String> {
         .map_err(|e| format!("打不开这个文件：{e}"))
 }
 
+/// explorer 的参数形状必须是 `/select,"<路径>"`：开关在外面、路径在里面。
+///
+/// 这里不能交给 Rust 自动加引号——路径含空格时它会生成 `"/select,C:\a b.jpg"`，
+/// 整个开关被包进引号，explorer 就当普通路径处理，结果打开的是默认位置（用户反馈的 bug）。
+fn reveal_arg(path: &str) -> String {
+    format!("/select,\"{}\"", path.replace('"', ""))
+}
+
 /// 在资源管理器里定位到这个文件。
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> std::result::Result<(), String> {
+    use std::os::windows::process::CommandExt;
     std::process::Command::new("explorer")
-        .arg(format!("/select,{path}"))
+        .raw_arg(reveal_arg(&path))
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("打不开资源管理器：{e}"))
@@ -427,4 +436,25 @@ pub async fn trim_thumb_cache(
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reveal_arg;
+
+    /// explorer 的开关必须留在引号外面，否则它会当成普通路径、打开默认位置。
+    #[test]
+    fn reveal_argument_keeps_switch_outside_quotes() {
+        assert_eq!(reveal_arg(r"D:\色图\a.jpg"), "/select,\"D:\\色图\\a.jpg\"");
+        assert_eq!(
+            reveal_arg(r"D:\色图\2017-2024 PIXIV daily\a b.jpg"),
+            "/select,\"D:\\色图\\2017-2024 PIXIV daily\\a b.jpg\"",
+            "含空格的路径必须只把路径括起来"
+        );
+        assert_eq!(
+            reveal_arg("D:\\x\"y.jpg"),
+            "/select,\"D:\\xy.jpg\"",
+            "路径里的引号要剔除"
+        );
+    }
 }

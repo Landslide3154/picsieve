@@ -117,14 +117,21 @@ img {
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.5);
 }
 
-/* 选中：放大 + 白蓝双描边 + 投影，在浅色和深色照片上都看得清 */
+/* 选中：放大 + 投影「凸出来」，描边画在格子内部。
+   之前描边画在格子外面（box-shadow 外扩 5px），两张挨着的图会互相压住对方的描边；
+   改成 inset 之后无论选多少张、怎么相邻都不会重叠。 */
 .cell.sel {
   transform: scale(1.045);
   z-index: 3;
+  /* 一层柔光（模糊的，相邻时会自然融合不会硬遮挡）+ 一层投影做「凸出来」 */
   box-shadow:
-    0 0 0 2px #fff,
-    0 0 0 5px var(--accent-bright),
+    0 0 14px rgba(108, 176, 255, 0.5),
     0 14px 28px rgba(0, 0, 0, 0.55);
+}
+.cell.sel .frame {
+  box-shadow:
+    inset 0 0 0 4px var(--accent-bright),
+    inset 0 0 0 5.5px rgba(255, 255, 255, 0.92);
 }
 .cell.sel .frame::after {
   content: '';

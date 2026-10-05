@@ -308,7 +308,8 @@ function navigatePreview(delta: number) {
 }
 .grid-offset {
   display: grid;
-  gap: 10px;
+  /* 12px：选中的格子会放大 4.5%，留出余量后相邻两张不会互相压住 */
+  gap: 12px;
   position: absolute;
   top: 0;
   left: 0;
