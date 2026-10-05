@@ -72,21 +72,28 @@ function setSizeMax(raw: string) {
   store.applyFilter({ maxSize: mb === null || Number.isNaN(mb) ? null : Math.round(mb * 1048576) })
 }
 
-/** 点格式：当前是「不限」时，先切到「除它之外全选」，
- *  这样连点几下就是「把不要的格式逐个去掉」，符合直觉。 */
+/** 点格式：单击去掉/加回一种。
+ *  - 当前是「不限」时，先切到「除它之外全选」，于是连点几下就是逐个排除
+ *  - 勾回到「全都选上」时自动还原成不限，免得条件标签里多一条没意义的「格式 xxx」
+ *  - 不允许把最后一种也去掉（那等于什么格式都不显示）
+ */
 function toggleExt(ext: string) {
+  const all = store.formats.map((x) => x.ext)
+  let next: string[]
   if (isAllExts.value) {
-    store.applyFilter({ exts: store.formats.map((x) => x.ext).filter((x) => x !== ext) })
+    next = all.filter((x) => x !== ext)
+  } else {
+    const cur = new Set(f.value.exts)
+    if (cur.has(ext)) cur.delete(ext)
+    else cur.add(ext)
+    next = all.filter((x) => cur.has(x))
+  }
+  if (!next.length) return
+  if (next.length === all.length) {
+    store.applyFilter({ exts: [] })
     return
   }
-  const cur = new Set(f.value.exts)
-  if (cur.has(ext)) cur.delete(ext)
-  else cur.add(ext)
-  store.applyFilter({ exts: [...cur] })
-}
-
-function showAllExts() {
-  store.applyFilter({ exts: [] })
+  store.applyFilter({ exts: next })
 }
 
 function onlyExt(ext: string) {
@@ -243,7 +250,6 @@ onMounted(() => {
         <span class="val">{{ isAllExts ? '全部' : `${f.exts.length} 种` }}</span>
       </header>
       <div class="chips">
-        <button class="chip" :class="{ on: isAllExts }" @click="showAllExts">全部</button>
         <button
           v-for="x in store.formats"
           :key="x.ext"
@@ -256,7 +262,7 @@ onMounted(() => {
           {{ x.ext.toUpperCase() }} <span class="dim tiny num">{{ fmtCount(x.count) }}</span>
         </button>
       </div>
-      <p class="hint">按你库里实际有的格式生成（带张数）：单击去掉/加回一种，双击只看这一种</p>
+      <p class="hint">按你库里实际有的格式生成（带张数）：单击去掉/加回一种，双击只看这一种；全部选上就是不限</p>
     </section>
 
     <section class="facet">

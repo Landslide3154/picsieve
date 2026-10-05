@@ -13,6 +13,9 @@
   --accent: #4a90d9;
   --accent-bright: #6cb0ff;
   --accent-soft: rgba(74, 144, 217, 0.18);
+  /* 选中高亮：暖橙。照片里蓝色紫色最多，橙色最不容易撞色，而且够跳 */
+  --sel: #ffa424;
+  --sel-soft: rgba(255, 164, 36, 0.55);
   --danger: #c0553f;
   --danger-soft: rgba(192, 85, 63, 0.18);
   --ok: #4fb477;

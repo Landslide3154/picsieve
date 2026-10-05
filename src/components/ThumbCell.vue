@@ -118,32 +118,31 @@ img {
 }
 
 /* 选中：放大 + 投影「凸出来」，描边画在格子内部。
-   之前描边画在格子外面（box-shadow 外扩 5px），两张挨着的图会互相压住对方的描边；
-   改成 inset 之后无论选多少张、怎么相邻都不会重叠。 */
+   描边画在外面的话，两张挨着的图会互相压住对方的边；画在内侧就永远不会重叠。
+   颜色用暖橙：照片里蓝紫最多，橙色最不容易被画面吃掉。 */
 .cell.sel {
   transform: scale(1.045);
   z-index: 3;
-  /* 一层柔光（模糊的，相邻时会自然融合不会硬遮挡）+ 一层投影做「凸出来」 */
   box-shadow:
-    0 0 14px rgba(108, 176, 255, 0.5),
+    0 0 18px var(--sel-soft),
     0 14px 28px rgba(0, 0, 0, 0.55);
 }
 .cell.sel .frame {
   box-shadow:
-    inset 0 0 0 4px var(--accent-bright),
-    inset 0 0 0 5.5px rgba(255, 255, 255, 0.92);
+    inset 0 0 0 6px var(--sel),
+    inset 0 0 0 8px rgba(255, 255, 255, 0.95);
 }
 .cell.sel .frame::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(108, 176, 255, 0.12), rgba(0, 0, 0, 0.18));
+  background: linear-gradient(180deg, rgba(255, 164, 36, 0.1), rgba(0, 0, 0, 0.18));
 }
 .cell.focused {
   z-index: 2;
 }
 .cell.focused .frame {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--sel);
   outline-offset: -2px;
 }
 .cell:focus-visible {
@@ -157,8 +156,8 @@ img {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: var(--accent-bright);
-  color: #10233b;
+  background: var(--sel);
+  color: #2a1a00;
   font-weight: 800;
   font-size: 14px;
   display: grid;
