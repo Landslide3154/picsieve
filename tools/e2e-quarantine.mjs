@@ -80,13 +80,24 @@ const PRELUDE = `
     const list = await invoke('query_files_cmd', { filter: ALL });
     return list.findIndex((f) => f.path === VICTIM);
   };
+  const clearSelection = async () => {
+    const btn = Array.from(document.querySelectorAll('button'))
+      .find((b) => (b.textContent || '').trim() === '取消选择');
+    if (btn) { btn.click(); await sleep(300); }
+  };
   const clickVictimCell = async () => {
     const i = await cellIndexOfVictim();
     if (i < 0) throw new Error('图库里找不到夹具文件');
     const cells = document.querySelectorAll('.cell');
     if (!cells[i]) throw new Error('格子还没渲染出来: ' + i + '/' + cells.length);
+    // 图库的选择会跨标签页保留，上一步留下的选中必须清掉，
+    // 否则「移到隔离区」会连旧选中一起搬走（这里踩过一次坑）
+    await clearSelection();
     cells[i].click();
-    await wait(() => (document.querySelector('.bar')?.textContent || '').includes('1 张'), '选中 1 张');
+    await wait(
+      () => /已选 1 张/.test(document.querySelector('.bar')?.textContent || ''),
+      '恰好选中 1 张',
+    );
   };
   // 提示条会停留 5 秒，第二次操作前必须等它消失，否则会读到上一条旧提示
   const moveVictim = async () => {
