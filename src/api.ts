@@ -5,6 +5,9 @@ import type {
   FileRecord,
   Filter,
   GroupView,
+  MoveReport,
+  PurgeReport,
+  QuarantineBatch,
   RebuildResult,
   ScanProgress,
   ScanStats,
@@ -25,6 +28,13 @@ export const listDupGroups = (kind: string, offset: number, limit: number) =>
 export const setKeeper = (groupId: number, fileId: number) =>
   invoke<void>('set_keeper', { groupId, fileId })
 export const rebuildGroups = () => invoke<RebuildResult>('rebuild_groups')
+
+export const moveToQuarantine = (fileIds: number[]) =>
+  invoke<MoveReport>('move_to_quarantine', { fileIds })
+export const restoreBatch = (batch: string) => invoke<MoveReport>('restore_batch', { batch })
+export const purgeBatch = (batch: string) => invoke<PurgeReport>('purge_batch', { batch })
+export const listQuarantineBatches = () =>
+  invoke<QuarantineBatch[]>('list_quarantine_batches')
 
 /** 取缩略图并转成可直接放进 <img src> 的 Blob URL。调用方负责在不用时 revoke。 */
 export async function fetchThumbUrl(fileId: number): Promise<string> {

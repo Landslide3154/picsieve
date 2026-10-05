@@ -8,60 +8,12 @@
 //   3) 跑冒烟：  node tools/e2e-smoke.mjs <图片目录> [隔离区目录]
 //
 // 依赖 Node 22+ 自带的全局 WebSocket 与 fetch，不需要额外装包。
+import { connect } from './cdp.mjs'
+
 const IMAGES = process.argv[2]
 const QUARANTINE = process.argv[3] || 'D:\\code\\PicSieve\\.e2e\\quarantine'
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-async function findPage() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const list = await (await fetch('http://127.0.0.1:9222/json/list')).json()
-      const page =
-        list.find((t) => t.type === 'page' && t.url.includes('1420')) ||
-        list.find((t) => t.type === 'page')
-      if (page?.webSocketDebuggerUrl) return page
-    } catch {
-      /* 端口还没起来 */
-    }
-    await sleep(500)
-  }
-  throw new Error('找不到 WebView2 调试目标（9222）')
-}
-
-const page = await findPage()
-const ws = new WebSocket(page.webSocketDebuggerUrl)
-await new Promise((res, rej) => {
-  ws.addEventListener('open', res, { once: true })
-  ws.addEventListener('error', rej, { once: true })
-})
-
-let nextId = 1
-const consoleErrors = []
-function send(method, params = {}) {
-  return new Promise((resolve, reject) => {
-    const id = nextId++
-    const onMsg = (ev) => {
-      const m = JSON.parse(ev.data)
-      if (m.method === 'Runtime.exceptionThrown') {
-        consoleErrors.push(
-          'exception: ' + (m.params?.exceptionDetails?.exception?.description ?? 'unknown'),
-        )
-      } else if (m.method === 'Runtime.consoleAPICalled' && m.params?.type === 'error') {
-        consoleErrors.push('console.error: ' + JSON.stringify(m.params.args?.map((a) => a.value)))
-      }
-      if (m.id === id) {
-        ws.removeEventListener('message', onMsg)
-        if (m.error) reject(new Error(JSON.stringify(m.error)))
-        else resolve(m.result)
-      }
-    }
-    ws.addEventListener('message', onMsg)
-    ws.send(JSON.stringify({ id, method, params }))
-  })
-}
-
-await send('Runtime.enable')
+const { evaluate, pageErrors, close } = await connect()
 
 const flow = `(async () => {
   const IMAGES = ${JSON.stringify(IMAGES)};
@@ -242,15 +194,12 @@ const flow = `(async () => {
   return report;
 })()`
 
-const result = await send('Runtime.evaluate', {
-  expression: flow,
-  awaitPromise: true,
-  returnByValue: true,
-})
-
-if (result.exceptionDetails) {
-  console.log(JSON.stringify({ ok: false, error: result.exceptionDetails, pageErrors: consoleErrors }, null, 2))
+try {
+  const report = await evaluate(flow)
+  console.log(JSON.stringify({ ok: true, report, pageErrors }, null, 2))
+  close()
+} catch (error) {
+  console.log(JSON.stringify({ ok: false, error: String(error), pageErrors }, null, 2))
+  close()
   process.exit(1)
 }
-console.log(JSON.stringify({ ok: true, report: result.result.value, pageErrors: consoleErrors }, null, 2))
-ws.close()

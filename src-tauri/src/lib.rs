@@ -53,6 +53,7 @@ pub fn run() {
             commands::move_to_quarantine,
             commands::restore_batch,
             commands::purge_batch,
+            commands::list_quarantine_batches,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

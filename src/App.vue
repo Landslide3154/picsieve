@@ -1,22 +1,37 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { moveToQuarantine } from './api'
 import ActionBar from './components/ActionBar.vue'
 import DupGroupView from './components/DupGroupView.vue'
 import FilterPanel from './components/FilterPanel.vue'
+import QuarantineView from './components/QuarantineView.vue'
 import ThumbGrid from './components/ThumbGrid.vue'
 import ScanProgress from './components/ScanProgress.vue'
+import { useLibrary } from './stores/library'
 
-const tab = ref<'library' | 'groups' | 'scan'>('library')
+const tab = ref<'library' | 'groups' | 'quarantine' | 'scan'>('library')
 const notice = ref('')
+const store = useLibrary()
 
 function showNotice(text: string) {
   notice.value = text
-  window.setTimeout(() => (notice.value = ''), 4000)
+  window.setTimeout(() => (notice.value = ''), 5000)
 }
 
-function moveToQuarantine() {
-  // 隔离区在任务 17/18 接入，这里先给出明确反馈，不做任何文件操作
-  showNotice('隔离区功能还在接入中，暂时不会移动任何文件')
+async function move(ids: number[]) {
+  if (!ids.length) return
+  try {
+    const r = await moveToQuarantine(ids)
+    showNotice(`已移入隔离区 ${r.moved} 张${r.failed ? `，失败 ${r.failed} 张` : ''}`)
+    store.clearSelection()
+    await store.refresh()
+  } catch (e) {
+    showNotice('移入失败：' + String(e))
+  }
+}
+
+function moveSelected() {
+  void move([...store.selected])
 }
 </script>
 
@@ -26,6 +41,7 @@ function moveToQuarantine() {
     <nav>
       <button :class="{ on: tab === 'library' }" @click="tab = 'library'">图库</button>
       <button :class="{ on: tab === 'groups' }" @click="tab = 'groups'">重复组</button>
+      <button :class="{ on: tab === 'quarantine' }" @click="tab = 'quarantine'">隔离区</button>
       <button :class="{ on: tab === 'scan' }" @click="tab = 'scan'">扫描</button>
     </nav>
     <span class="flex" />
@@ -33,16 +49,14 @@ function moveToQuarantine() {
   </header>
 
   <ScanProgress v-if="tab === 'scan'" />
-  <DupGroupView
-    v-else-if="tab === 'groups'"
-    @move-to-quarantine="moveToQuarantine"
-  />
+  <QuarantineView v-else-if="tab === 'quarantine'" />
+  <DupGroupView v-else-if="tab === 'groups'" @move-to-quarantine="move" />
   <template v-else>
     <div class="body">
       <FilterPanel />
       <ThumbGrid />
     </div>
-    <ActionBar @move-to-quarantine="moveToQuarantine" />
+    <ActionBar @move-to-quarantine="moveSelected" />
   </template>
 </template>
 

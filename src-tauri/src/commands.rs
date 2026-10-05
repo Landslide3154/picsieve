@@ -244,3 +244,10 @@ pub async fn purge_batch(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub fn list_quarantine_batches(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<crate::model::QuarantineBatch>, String> {
+    state.db.quarantine_batches().map_err(|e| e.to_string())
+}
