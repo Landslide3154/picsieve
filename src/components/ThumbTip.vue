@@ -47,7 +47,6 @@ const style = computed(() => {
       作品 ID {{ file.pid ?? '—' }} · 画师 {{ file.artist ?? '—' }}
     </div>
     <div class="line path truncate">{{ file.path }}</div>
-    <div class="hint">双击用系统看图程序打开 · 右键更多操作</div>
   </div>
 </template>
 

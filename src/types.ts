@@ -19,10 +19,12 @@ export interface FileRecord {
 }
 
 export interface Filter {
-  minShortSide: number | null
-  maxShortSide: number | null
+  /** 清晰度：总像素数（宽 × 高） */
+  minPixels: number | null
+  maxPixels: number | null
   minSize: number | null
   maxSize: number | null
+  /** 空数组 = 不限格式 */
   exts: string[]
   onlyGray: boolean
   onlyDuplicated: boolean
@@ -92,6 +94,12 @@ export interface Histogram {
   edges: number[]
   buckets: number[]
   max: number
+}
+
+/** 库里实际存在的格式与张数 */
+export interface FormatStat {
+  ext: string
+  count: number
 }
 
 export interface RebuildResult {

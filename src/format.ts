@@ -29,6 +29,14 @@ export function fmtCount(n: number): string {
   return n.toLocaleString('zh-CN')
 }
 
+/** 总像素数转人话：1,920,000 → 192 万像素 */
+export function fmtPixels(px: number | null | undefined): string {
+  if (!px || !Number.isFinite(px) || px <= 0) return '0 像素'
+  if (px >= 100_000_000) return (px / 100_000_000).toFixed(2) + ' 亿像素'
+  if (px >= 10_000) return fmtCount(Math.round(px / 10_000)) + ' 万像素'
+  return fmtCount(px) + ' 像素'
+}
+
 /** 秒数转「几分钟」这类说法（预计剩余时间用） */
 export function fmtEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return ''
@@ -38,8 +46,7 @@ export function fmtEta(seconds: number): string {
   return `还要约 ${(seconds / 3600).toFixed(1)} 小时`
 }
 
-/** 相对时间（用 Intl，别自己拼字符串） */
-export function fmtRelative(secs: number, suffix = ''): string {
+/** 相对时间（用 Intl，别自己拼字符串） */export function fmtRelative(secs: number, suffix = ''): string {
   if (!secs) return '还没有记录'
   const rtf = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' })
   const diffMs = Date.now() - secs * 1000

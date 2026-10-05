@@ -8,12 +8,12 @@ pub fn build_where(f: &Filter, gray_threshold: f64) -> (String, Vec<Value>) {
     let mut conds: Vec<String> = vec!["status = 'normal'".into()];
     let mut args: Vec<Value> = Vec::new();
 
-    if let Some(v) = f.min_short_side {
-        conds.push("short_side >= ?".into());
+    if let Some(v) = f.min_pixels {
+        conds.push("(width * height) >= ?".into());
         args.push(Value::Integer(v));
     }
-    if let Some(v) = f.max_short_side {
-        conds.push("short_side <= ?".into());
+    if let Some(v) = f.max_pixels {
+        conds.push("(width * height) <= ?".into());
         args.push(Value::Integer(v));
     }
     if let Some(v) = f.min_size {
@@ -139,13 +139,13 @@ mod tests {
     }
 
     #[test]
-    fn filters_by_short_side_range() {
+    fn filters_by_clarity_range() {
         let db = Db::open_in_memory().unwrap();
         db.migrate().unwrap();
         seed(&db);
-        // 短边 >= 500 应同时命中 a.jpg(600) 与 b.png(1200)，c.gif(240) 排除
+        // 清晰度按总像素数算：a.jpg 80万，b.png 192万，c.gif 7.68万
         let f = Filter {
-            min_short_side: Some(500),
+            min_pixels: Some(400_000),
             limit: 100,
             ..Default::default()
         };
@@ -154,15 +154,25 @@ mod tests {
         paths.sort_unstable();
         assert_eq!(paths, vec!["a.jpg", "b.png"]);
 
-        // 抬高下界到 700，只剩 b.png
+        // 抬高下界，只剩 b.png
         let f = Filter {
-            min_short_side: Some(700),
+            min_pixels: Some(1_000_000),
             limit: 100,
             ..Default::default()
         };
         let got = query_files(&db, &f).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].path, "b.png");
+
+        // 上限也能用：只要小图
+        let f = Filter {
+            max_pixels: Some(100_000),
+            limit: 100,
+            ..Default::default()
+        };
+        let got = query_files(&db, &f).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].path, "c.gif");
     }
 
     #[test]

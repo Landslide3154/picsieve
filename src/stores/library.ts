@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { countFiles as apiCount, histogram, libraryStats, queryFiles } from '../api'
-import type { FileRecord, Filter, Histogram, LibraryStats } from '../types'
+import { countFiles as apiCount, formatStats, histogram, libraryStats, queryFiles } from '../api'
+import type { FileRecord, Filter, FormatStat, Histogram, LibraryStats } from '../types'
 
 /** 一次取多少张。滚到底会自动再取一批，见 loadMore。 */
 export const PAGE = 300
@@ -9,20 +9,19 @@ export const PAGE = 300
 export const SORT_OPTIONS: { value: string; label: string }[] = [
   { value: 'sizeDesc', label: '体积：大到小' },
   { value: 'sizeAsc', label: '体积：小到大' },
-  { value: 'shortSideDesc', label: '清晰度：高到低' },
-  { value: 'shortSideAsc', label: '清晰度：低到高' },
+  { value: 'pixelsDesc', label: '清晰度：高到低' },
+  { value: 'pixelsAsc', label: '清晰度：低到高' },
   { value: 'pathAsc', label: '路径' },
 ]
 
-export const EXTS = ['jpg', 'png', 'gif', 'webp', 'bmp']
-
 export function emptyFilter(): Filter {
   return {
-    minShortSide: null,
-    maxShortSide: null,
+    minPixels: null,
+    maxPixels: null,
     minSize: null,
     maxSize: null,
-    exts: ['jpg', 'png', 'gif'],
+    // 空数组 = 不限格式：库里有什么格式就都能看到，不写死列表
+    exts: [],
     onlyGray: false,
     onlyDuplicated: false,
     onlyDecodeError: false,
@@ -39,8 +38,10 @@ export const useLibrary = defineStore('library', () => {
   const total = ref(0)
   const selected = ref<Set<number>>(new Set())
   const stats = ref<LibraryStats>({ total: 0, bytes: 0, lastScanAt: 0 })
-  const histShort = ref<Histogram | null>(null)
+  const histPixels = ref<Histogram | null>(null)
   const histSize = ref<Histogram | null>(null)
+  /** 库里实际存在的格式（按张数从多到少），格式选项由它生成 */
+  const formats = ref<FormatStat[]>([])
   const loading = ref(false)
   const loadingMore = ref(false)
   const error = ref('')
@@ -218,11 +219,20 @@ export const useLibrary = defineStore('library', () => {
 
   async function loadHistograms() {
     try {
-      const [s, z] = await Promise.all([histogram('shortSide'), histogram('size')])
-      histShort.value = s
+      const [p, z] = await Promise.all([histogram('pixels'), histogram('size')])
+      histPixels.value = p
       histSize.value = z
     } catch {
       /* 画不出分布图也能用 */
+    }
+  }
+
+  /** 格式选项按库里实际有的来（扫描/隔离后要重新取） */
+  async function loadFormats() {
+    try {
+      formats.value = await formatStats()
+    } catch {
+      /* 取不到就退回「不限格式」 */
     }
   }
 
@@ -232,8 +242,9 @@ export const useLibrary = defineStore('library', () => {
     total,
     selected,
     stats,
-    histShort,
+    histPixels,
     histSize,
+    formats,
     loading,
     loadingMore,
     error,
@@ -257,5 +268,6 @@ export const useLibrary = defineStore('library', () => {
     clearSelection,
     loadStats,
     loadHistograms,
+    loadFormats,
   }
 })

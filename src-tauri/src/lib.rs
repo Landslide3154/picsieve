@@ -59,6 +59,7 @@ pub fn run() {
             commands::open_external,
             commands::reveal_in_explorer,
             commands::histogram_cmd,
+            commands::format_stats_cmd,
             commands::library_stats,
             commands::count_dup_groups,
             commands::quarantine_batch_files,

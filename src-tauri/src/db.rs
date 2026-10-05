@@ -31,6 +31,8 @@ CREATE INDEX IF NOT EXISTS idx_files_short_side ON files(short_side);
 CREATE INDEX IF NOT EXISTS idx_files_content    ON files(content_hash);
 CREATE INDEX IF NOT EXISTS idx_files_phash      ON files(phash);
 CREATE INDEX IF NOT EXISTS idx_files_pid        ON files(pid);
+-- 清晰度筛选走「总像素数」，SQLite 支持表达式索引，配合查询里的 (width * height) 使用
+CREATE INDEX IF NOT EXISTS idx_files_pixels     ON files(width * height);
 -- 曾经给 (status, short_side) 加过复合索引想让「命中数」更快，结果适得其反：
 -- 查询是 `... ORDER BY size DESC LIMIT 300`，有了这个过滤索引后 SQLite 会先按 short_side
 -- 取出一大片再排序，丢掉了原本「按 size 有序扫描、凑够 300 条就停」的路子，
@@ -567,6 +569,55 @@ impl Db {
         })
     }
 
+    /// 清晰度分布：总像素数（宽 × 高），从 2^12（约 0.04 万像素的图块）起每个 2 的幂一档。
+    pub fn histogram_pixels(&self) -> Result<crate::model::Histogram> {
+        const BUCKETS: usize = 18;
+        let mut case = String::from("CASE");
+        for i in 0..BUCKETS - 1 {
+            let threshold: i64 = 1i64 << (12 + i + 1);
+            case.push_str(&format!(" WHEN width * height < {threshold} THEN {i}"));
+        }
+        case.push_str(&format!(" ELSE {} END", BUCKETS - 1));
+
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {case} AS b, COUNT(*) FROM files
+             WHERE status='normal' AND width IS NOT NULL AND height IS NOT NULL
+             GROUP BY b"
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut buckets = vec![0u64; BUCKETS];
+        for row in rows {
+            let (b, n) = row?;
+            if b >= 0 && (b as usize) < BUCKETS {
+                buckets[b as usize] = n as u64;
+            }
+        }
+        let mut edges: Vec<i64> = (0..BUCKETS as u32).map(|i| 1i64 << (12 + i)).collect();
+        edges.push(1i64 << (12 + BUCKETS as u32));
+        Ok(crate::model::Histogram {
+            edges,
+            max: buckets.iter().copied().max().unwrap_or(0),
+            buckets,
+        })
+    }
+
+    /// 库里实际有哪些格式、各多少张。格式选项由它生成，不写死列表。
+    pub fn format_stats(&self) -> Result<Vec<crate::model::FormatStat>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(ext, '未知'), COUNT(*) FROM files
+             WHERE status='normal' GROUP BY ext ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(crate::model::FormatStat {
+                ext: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     pub fn library_stats(&self) -> Result<crate::model::LibraryStats> {
         let conn = self.conn.lock();
         let (total, bytes, last): (i64, i64, i64) = conn.query_row(
@@ -772,6 +823,44 @@ mod tests {
         let id = db.upsert_file(&rec).expect("upsert");
         let got = db.get_file(id).expect("get").expect("some");
         assert_eq!(got.short_side, Some(600), "short_side 应由写入时算好");
+    }
+
+    /// 清晰度直方图按「总像素数」分档；格式统计必须反映库里真实存在的格式。
+    #[test]
+    fn pixels_histogram_and_format_stats() {
+        let db = Db::open_in_memory().expect("open");
+        db.migrate().expect("migrate");
+        let seed = |ext: &str, w: i64, h: i64| {
+            db.upsert_file(&FileRecord {
+                path: format!("x{}_{}.{}", w, h, ext),
+                root: "r".into(),
+                size: 1000,
+                mtime: 1,
+                ext: Some(ext.to_string()),
+                width: Some(w),
+                height: Some(h),
+                ..Default::default()
+            })
+            .unwrap();
+        };
+        seed("jpg", 640, 480); // 30.7 万像素 → 第 6 档
+        seed("png", 1920, 1080); // 207 万像素（略小于 2^21）→ 第 8 档
+        seed("png", 4000, 3000); // 1200 万像素 → 第 11 档
+
+        let h = db.histogram_pixels().expect("pixels");
+        assert_eq!(h.buckets.len(), 18);
+        assert_eq!(h.edges.len(), 19);
+        assert_eq!(h.edges[0], 4096, "像素刻度从 2^12 起");
+        assert_eq!(h.buckets[6], 1, "640×480 落在第 6 档");
+        assert_eq!(h.buckets[8], 1, "1920×1080 落在第 8 档");
+        assert_eq!(h.buckets[11], 1, "4000×3000 落在第 11 档");
+
+        let f = db.format_stats().expect("formats");
+        assert_eq!(f.len(), 2, "库里只有 jpg 与 png 两种格式");
+        assert_eq!(f[0].ext, "png");
+        assert_eq!(f[0].count, 2, "按数量从多到少排");
+        assert_eq!(f[1].ext, "jpg");
+        assert_eq!(f[1].count, 1);
     }
 
     /// 文件被扫到时，记录必须回到 normal 并且旧指纹清空。

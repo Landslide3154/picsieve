@@ -137,7 +137,7 @@ pub fn reveal_in_explorer(path: String) -> std::result::Result<(), String> {
         .map_err(|e| format!("打不开资源管理器：{e}"))
 }
 
-/// 筛选栏的分布直方图。kind = "size" 或 "shortSide"。
+/// 筛选栏的分布直方图。kind = "size" | "pixels"。
 #[tauri::command]
 pub async fn histogram_cmd(
     app: AppHandle,
@@ -145,15 +145,23 @@ pub async fn histogram_cmd(
 ) -> std::result::Result<crate::model::Histogram, String> {
     let db = app.state::<AppState>().db.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let r = if kind == "size" {
-            db.histogram_size()
-        } else {
-            db.histogram_short_side()
+        let r = match kind.as_str() {
+            "size" => db.histogram_size(),
+            "pixels" => db.histogram_pixels(),
+            _ => db.histogram_short_side(),
         };
         r.map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 库里实际存在的格式与张数（格式选项不写死，按数据来）。
+#[tauri::command]
+pub fn format_stats_cmd(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<crate::model::FormatStat>, String> {
+    state.db.format_stats().map_err(|e| e.to_string())
 }
 
 /// 顶栏用的库内总体情况。

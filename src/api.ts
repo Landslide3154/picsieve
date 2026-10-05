@@ -5,6 +5,7 @@ import type {
   FileRecord,
   Filter,
   FingerprintResult,
+  FormatStat,
   GroupView,
   Histogram,
   LibraryStats,
@@ -39,8 +40,10 @@ export async function pickFolder(): Promise<string | null> {
 export const queryFiles = (filter: Filter) => invoke<FileRecord[]>('query_files_cmd', { filter })
 export const countFiles = (filter: Filter) => invoke<number>('count_files_cmd', { filter })
 export const libraryStats = () => invoke<LibraryStats>('library_stats')
-export const histogram = (kind: 'size' | 'shortSide') =>
+export const histogram = (kind: 'size' | 'pixels') =>
   invoke<Histogram>('histogram_cmd', { kind })
+/** 库里实际有哪些格式、各多少张 */
+export const formatStats = () => invoke<FormatStat[]>('format_stats_cmd')
 
 // ---------- 缩略图与预览 ----------
 /** 取缩略图并转成可直接放进 <img src> 的 Blob URL。调用方负责在不用时 revoke。 */

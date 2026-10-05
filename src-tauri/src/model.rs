@@ -37,8 +37,9 @@ pub enum SortKey {
     #[default]
     SizeDesc,
     SizeAsc,
-    ShortSideDesc,
-    ShortSideAsc,
+    /// 清晰度 = 总像素数（宽 × 高）
+    PixelsDesc,
+    PixelsAsc,
     PathAsc,
 }
 
@@ -48,8 +49,8 @@ impl SortKey {
         match self {
             SortKey::SizeDesc => "size DESC",
             SortKey::SizeAsc => "size ASC",
-            SortKey::ShortSideDesc => "short_side DESC NULLS LAST",
-            SortKey::ShortSideAsc => "short_side ASC NULLS LAST",
+            SortKey::PixelsDesc => "(width * height) DESC NULLS LAST",
+            SortKey::PixelsAsc => "(width * height) ASC NULLS LAST",
             SortKey::PathAsc => "path ASC",
         }
     }
@@ -58,10 +59,12 @@ impl SortKey {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Filter {
-    pub min_short_side: Option<i64>,
-    pub max_short_side: Option<i64>,
+    /// 清晰度：总像素数（宽 × 高）。不用短边，因为同一幅画横竖版差很多。
+    pub min_pixels: Option<i64>,
+    pub max_pixels: Option<i64>,
     pub min_size: Option<i64>,
     pub max_size: Option<i64>,
+    /// 空数组 = 不限格式（库里有几种就能看几种）
     pub exts: Vec<String>,
     pub only_gray: bool,
     pub only_duplicated: bool,
@@ -119,6 +122,14 @@ pub struct Histogram {
     pub edges: Vec<i64>,
     pub buckets: Vec<u64>,
     pub max: u64,
+}
+
+/// 库里实际存在的格式与张数。格式选项由它生成，避免写死的列表漏掉格式。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatStat {
+    pub ext: String,
+    pub count: i64,
 }
 
 /// 隔离区里的一批文件。

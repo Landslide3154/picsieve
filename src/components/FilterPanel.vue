@@ -1,49 +1,45 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import RangeSlider from './RangeSlider.vue'
-import { EXTS, useLibrary } from '../stores/library'
+import { fmtBytes, fmtCount, fmtPixels } from '../format'
+import { useLibrary } from '../stores/library'
 
 const store = useLibrary()
 const f = computed(() => store.filter)
 
-// 分辨率刻度：0–8000px，每 50px 一格（实测最大短边 7156px）
-const SHORT_MIN = 0
-const SHORT_MAX = 8000
-// 体积刻度：1KB–1GB，对数刻度；否则几千张图会全挤在最左边
+// 清晰度刻度：总像素数（宽 × 高），2^12 到 2^30，对数刻度。
+// 不用短边：同一幅画的横版竖版短边差很多，总像素更能代表「清晰度」。
+const PIX_MIN = 1 << 12
+const PIX_MAX = 1 << 30
+// 体积刻度：1KB 到 1GB，对数刻度；否则几千张图会全挤在最左边
 const SIZE_MIN = 1 << 10
 const SIZE_MAX = 1 << 30
 
-const shortRange = computed<[number, number]>(() => [
-  f.value.minShortSide ?? SHORT_MIN,
-  f.value.maxShortSide ?? SHORT_MAX,
+const pixelsRange = computed<[number, number]>(() => [
+  f.value.minPixels ?? PIX_MIN,
+  f.value.maxPixels ?? PIX_MAX,
 ])
 const sizeRange = computed<[number, number]>(() => [
   f.value.minSize ?? SIZE_MIN,
   f.value.maxSize ?? SIZE_MAX,
 ])
 
-const isAllShort = computed(
-  () => f.value.minShortSide === null && f.value.maxShortSide === null,
-)
+const isAllPixels = computed(() => f.value.minPixels === null && f.value.maxPixels === null)
 const isAllSize = computed(() => f.value.minSize === null && f.value.maxSize === null)
+/** 格式空数组 = 不限（库里有什么都能看到） */
+const isAllExts = computed(() => f.value.exts.length === 0)
 
-function fmtSize(bytes: number): string {
-  if (bytes >= 1 << 30) return (bytes / (1 << 30)).toFixed(2) + ' GB'
-  if (bytes >= 1 << 20) {
-    const mb = bytes / (1 << 20)
-    return (mb >= 100 ? mb.toFixed(0) : mb.toFixed(1)) + ' MB'
-  }
-  return Math.round(bytes / 1024) + ' KB'
+/** 某个格式当前是否处于「会显示」的状态 */
+function extOn(ext: string): boolean {
+  return isAllExts.value || f.value.exts.includes(ext)
 }
 
-function fmtShort(v: number): string {
-  return v === SHORT_MAX ? '不限' : v + ' px'
-}
+const fmtSize = (bytes: number) => fmtBytes(bytes)
 
-function onShortDrag(v: [number, number]) {
+function onPixelsDrag(v: [number, number]) {
   store.dragFilter({
-    minShortSide: v[0] > SHORT_MIN ? Math.round(v[0]) : null,
-    maxShortSide: v[1] < SHORT_MAX ? Math.round(v[1]) : null,
+    minPixels: v[0] > PIX_MIN ? Math.round(v[0]) : null,
+    maxPixels: v[1] < PIX_MAX ? Math.round(v[1]) : null,
   })
 }
 
@@ -54,14 +50,18 @@ function onSizeDrag(v: [number, number]) {
   })
 }
 
-/** 数字框直接输入：短边单位 px，体积单位 MB */
-function setShortMin(raw: string) {
-  const v = raw.trim() === '' ? null : Number(raw)
-  store.applyFilter({ minShortSide: v === null || Number.isNaN(v) ? null : Math.max(0, v) })
+/** 数字框直接输入：清晰度单位「万像素」，体积单位 MB */
+function setPixelsMin(raw: string) {
+  const wan = raw.trim() === '' ? null : Number(raw)
+  store.applyFilter({
+    minPixels: wan === null || Number.isNaN(wan) ? null : Math.max(0, Math.round(wan * 10000)),
+  })
 }
-function setShortMax(raw: string) {
-  const v = raw.trim() === '' ? null : Number(raw)
-  store.applyFilter({ maxShortSide: v === null || Number.isNaN(v) ? null : Math.max(0, v) })
+function setPixelsMax(raw: string) {
+  const wan = raw.trim() === '' ? null : Number(raw)
+  store.applyFilter({
+    maxPixels: wan === null || Number.isNaN(wan) ? null : Math.max(0, Math.round(wan * 10000)),
+  })
 }
 function setSizeMin(raw: string) {
   const mb = raw.trim() === '' ? null : Number(raw)
@@ -72,21 +72,37 @@ function setSizeMax(raw: string) {
   store.applyFilter({ maxSize: mb === null || Number.isNaN(mb) ? null : Math.round(mb * 1048576) })
 }
 
-function toggleExt(e: string) {
+/** 点格式：当前是「不限」时，先切到「除它之外全选」，
+ *  这样连点几下就是「把不要的格式逐个去掉」，符合直觉。 */
+function toggleExt(ext: string) {
+  if (isAllExts.value) {
+    store.applyFilter({ exts: store.formats.map((x) => x.ext).filter((x) => x !== ext) })
+    return
+  }
   const cur = new Set(f.value.exts)
-  if (cur.has(e)) cur.delete(e)
-  else cur.add(e)
+  if (cur.has(ext)) cur.delete(ext)
+  else cur.add(ext)
   store.applyFilter({ exts: [...cur] })
 }
+
+function showAllExts() {
+  store.applyFilter({ exts: [] })
+}
+
+function onlyExt(ext: string) {
+  store.applyFilter({ exts: [ext] })
+}
+
+const wan = (px: number | null) => (px === null ? '' : String(Math.round(px / 10000)))
 
 /** 当前生效的条件，每个都能单独删掉 */
 const activeChips = computed(() => {
   const chips: { key: string; text: string; clear: () => Partial<typeof f.value> }[] = []
-  if (!isAllShort.value) {
+  if (!isAllPixels.value) {
     chips.push({
-      key: 'short',
-      text: `短边 ${shortRange.value[0]}–${shortRange.value[1] === SHORT_MAX ? '不限' : shortRange.value[1]} px`,
-      clear: () => ({ minShortSide: null, maxShortSide: null }),
+      key: 'pixels',
+      text: `清晰度 ${fmtPixels(pixelsRange.value[0])} – ${pixelsRange.value[1] === PIX_MAX ? '不限' : fmtPixels(pixelsRange.value[1])}`,
+      clear: () => ({ minPixels: null, maxPixels: null }),
     })
   }
   if (!isAllSize.value) {
@@ -96,11 +112,11 @@ const activeChips = computed(() => {
       clear: () => ({ minSize: null, maxSize: null }),
     })
   }
-  for (const e of f.value.exts) {
+  if (!isAllExts.value) {
     chips.push({
-      key: 'ext-' + e,
-      text: e.toUpperCase(),
-      clear: () => ({ exts: f.value.exts.filter((x) => x !== e) }),
+      key: 'exts',
+      text: `格式 ${f.value.exts.map((e) => e.toUpperCase()).join('/')}`,
+      clear: () => ({ exts: [] }),
     })
   }
   if (f.value.onlyGray) chips.push({ key: 'gray', text: '只看灰阶', clear: () => ({ onlyGray: false }) })
@@ -108,13 +124,12 @@ const activeChips = computed(() => {
     chips.push({ key: 'dup', text: '只看重复', clear: () => ({ onlyDuplicated: false }) })
   if (f.value.onlyDecodeError)
     chips.push({ key: 'bad', text: '只看读不出的', clear: () => ({ onlyDecodeError: false }) })
-  if (f.value.search)
-    chips.push({ key: 'search', text: `搜索「${f.value.search}」`, clear: () => ({ search: null }) })
   return chips
 })
 
 onMounted(() => {
-  if (!store.histShort || !store.histSize) void store.loadHistograms()
+  if (!store.histPixels || !store.histSize) void store.loadHistograms()
+  if (!store.formats.length) void store.loadFormats()
 })
 </script>
 
@@ -122,52 +137,53 @@ onMounted(() => {
   <aside class="filters">
     <section class="facet">
       <header>
-        <b>分辨率（短边）</b>
-        <span class="val num">{{ isAllShort ? '不限' : `${shortRange[0]}–${shortRange[1]} px` }}</span>
+        <b>清晰度</b>
+        <span class="val num">
+          {{ isAllPixels ? '不限' : `${fmtPixels(pixelsRange[0])} – ${pixelsRange[1] === PIX_MAX ? '不限' : fmtPixels(pixelsRange[1])}` }}
+        </span>
       </header>
       <RangeSlider
-        :model-value="shortRange"
-        :min="SHORT_MIN"
-        :max="SHORT_MAX"
-        :step="50"
-        label="分辨率短边"
-        :buckets="store.histShort?.buckets ?? []"
-        :edges="store.histShort?.edges ?? []"
-        :format="fmtShort"
-        @update:model-value="onShortDrag"
-        @change="onShortDrag"
+        :model-value="pixelsRange"
+        :min="PIX_MIN"
+        :max="PIX_MAX"
+        :step="5"
+        scale="log"
+        label="清晰度"
+        :buckets="store.histPixels?.buckets ?? []"
+        :edges="store.histPixels?.edges ?? []"
+        :format="fmtPixels"
+        @update:model-value="onPixelsDrag"
+        @change="onPixelsDrag"
       />
       <div class="inputs">
         <input
           type="number"
           min="0"
-          :max="SHORT_MAX"
-          :value="f.minShortSide ?? ''"
+          :value="wan(f.minPixels)"
           placeholder="不限"
-          aria-label="短边下限（像素）"
-          @change="setShortMin(($event.target as HTMLInputElement).value)"
+          aria-label="清晰度下限（万像素）"
+          @change="setPixelsMin(($event.target as HTMLInputElement).value)"
         />
         <span class="dim">到</span>
         <input
           type="number"
           min="0"
-          :max="SHORT_MAX"
-          :value="f.maxShortSide ?? ''"
+          :value="wan(f.maxPixels)"
           placeholder="不限"
-          aria-label="短边上限（像素）"
-          @change="setShortMax(($event.target as HTMLInputElement).value)"
+          aria-label="清晰度上限（万像素）"
+          @change="setPixelsMax(($event.target as HTMLInputElement).value)"
         />
-        <span class="unit">px</span>
+        <span class="unit">万像素</span>
         <button
           class="btn link sm"
-          :disabled="isAllShort"
-          aria-label="重置分辨率条件"
-          @click="store.resetFacet({ minShortSide: null, maxShortSide: null })"
+          :disabled="isAllPixels"
+          aria-label="重置清晰度条件"
+          @click="store.resetFacet({ minPixels: null, maxPixels: null })"
         >
           重置
         </button>
       </div>
-      <p class="hint">灰柱是全库在这条刻度上的分布，蓝色段是当前选中的范围</p>
+      <p class="hint">按整张图的总像素数（宽 × 高）算，灰柱是全库分布</p>
     </section>
 
     <section class="facet">
@@ -222,18 +238,25 @@ onMounted(() => {
     </section>
 
     <section class="facet">
-      <header><b>格式</b></header>
+      <header>
+        <b>格式</b>
+        <span class="val">{{ isAllExts ? '全部' : `${f.exts.length} 种` }}</span>
+      </header>
       <div class="chips">
+        <button class="chip" :class="{ on: isAllExts }" @click="showAllExts">全部</button>
         <button
-          v-for="e in EXTS"
-          :key="e"
+          v-for="x in store.formats"
+          :key="x.ext"
           class="chip"
-          :class="{ on: f.exts.includes(e) }"
-          @click="toggleExt(e)"
+          :class="{ on: extOn(x.ext) }"
+          :title="`单击去掉/加回，双击只看 ${x.ext.toUpperCase()}`"
+          @click="toggleExt(x.ext)"
+          @dblclick="onlyExt(x.ext)"
         >
-          {{ e.toUpperCase() }}
+          {{ x.ext.toUpperCase() }} <span class="dim tiny num">{{ fmtCount(x.count) }}</span>
         </button>
       </div>
+      <p class="hint">按你库里实际有的格式生成（带张数）：单击去掉/加回一种，双击只看这一种</p>
     </section>
 
     <section class="facet">
@@ -266,7 +289,7 @@ onMounted(() => {
 
     <section class="facet result">
       <p class="hit num">
-        命中 <b>{{ store.total.toLocaleString('zh-CN') }}</b> 张
+        命中 <b>{{ fmtCount(store.total) }}</b> 张
         <em v-if="store.total > store.files.length">（已载入 {{ store.files.length }}）</em>
       </p>
       <div v-if="activeChips.length" class="active">
@@ -291,7 +314,7 @@ onMounted(() => {
 
 <style scoped>
 .filters {
-  width: 244px;
+  width: 256px;
   flex: none;
   padding: 14px 14px 20px;
   border-right: 1px solid var(--line);
@@ -322,13 +345,19 @@ onMounted(() => {
   margin-top: 8px;
 }
 .inputs input {
-  width: 62px;
-  padding: 3px 7px;
+  width: 56px;
+  padding: 3px 6px;
   font-size: 12px;
 }
 .unit {
   font-size: 11px;
   color: var(--dim);
+  white-space: nowrap;
+}
+.inputs :deep(.btn),
+.inputs .btn {
+  white-space: nowrap;
+  flex: none;
 }
 .hint {
   margin: 6px 0 0;
