@@ -92,5 +92,6 @@ const rootsTip = computed(() =>
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 </style>

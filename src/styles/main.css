@@ -75,6 +75,9 @@ body {
   padding: 5px 12px;
   font: inherit;
   line-height: 1.4;
+  /* 按钮文字绝不换行：窗口窄的时候「移到隔离区」被挤成两行很难看 */
+  white-space: nowrap;
+  flex: none;
   cursor: pointer;
   transition:
     background-color var(--speed) ease,
