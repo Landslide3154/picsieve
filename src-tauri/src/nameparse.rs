@@ -88,7 +88,11 @@ mod tests {
     #[test]
     fn returns_none_when_no_pid() {
         assert_eq!(parse_pid("-.jpg"), None);
-        assert_eq!(parse_pid("_LM7_ - 105"), None, "105 太短，不应被当作作品 ID");
+        assert_eq!(
+            parse_pid("_LM7_ - 105"),
+            None,
+            "105 太短，不应被当作作品 ID"
+        );
     }
 
     #[test]
@@ -105,7 +109,10 @@ mod tests {
 
     #[test]
     fn returns_none_when_artist_unknown() {
-        assert_eq!(parse_artist("【yae】　狼ト生キル - 成人式[pid=48119895]"), None);
+        assert_eq!(
+            parse_artist("【yae】　狼ト生キル - 成人式[pid=48119895]"),
+            None
+        );
         assert_eq!(parse_artist("-.jpg"), None);
     }
 
