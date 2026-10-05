@@ -1,0 +1,275 @@
+use crate::db::{now_secs, Db};
+use crate::error::{AppError, Result};
+use crate::model::{FileRecord, ScanStats};
+use crate::nameparse;
+use rayon::prelude::*;
+use std::path::{Path, PathBuf};
+
+/// 只处理这些扩展名的文件；其余只计数不入库。
+const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp"];
+
+#[derive(Debug, Clone)]
+pub struct ScanOptions {
+    pub threads: usize,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        let n = std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(4);
+        Self {
+            threads: n.saturating_sub(2).max(1),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanProgress {
+    pub seen: u64,
+    pub total_hint: u64,
+    pub current: String,
+}
+
+pub fn is_image_ext(ext: &str) -> bool {
+    IMAGE_EXTS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
+/// 遍历 roots，把图片文件的元数据写入数据库。
+///
+/// 已入库且 `size` 与 `mtime` 都没变的对象直接跳过（增量）。
+/// 单个文件出错只记录、不中断整体。
+pub fn scan(
+    db: &Db,
+    roots: &[PathBuf],
+    opts: &ScanOptions,
+    progress: &mut dyn FnMut(ScanProgress),
+) -> Result<ScanStats> {
+    for r in roots {
+        if !r.is_dir() {
+            return Err(AppError::NotADirectory(r.clone()));
+        }
+    }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(opts.threads)
+        .build()
+        .map_err(|e| AppError::Other(format!("线程池创建失败: {e}")))?;
+
+    // 收集待处理文件，同时记住它属于哪个扫描根目录
+    let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for root in roots {
+        for entry in jwalk::WalkDir::new(root).skip_hidden(false) {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if is_image_ext(ext) {
+                candidates.push((path, root.clone()));
+            }
+        }
+    }
+
+    let total_hint = candidates.len() as u64;
+    let known = db.path_fingerprints()?;
+
+    let results: Vec<std::result::Result<Option<FileRecord>, ()>> = pool.install(|| {
+        candidates
+            .par_iter()
+            .map(
+                |(path, root)| -> std::result::Result<Option<FileRecord>, ()> {
+                    match build_record(path, root) {
+                        Ok(rec) => Ok(Some(rec)),
+                        Err(_) => Err(()),
+                    }
+                },
+            )
+            .collect()
+    });
+
+    let mut stats = ScanStats::default();
+    let mut seen = 0u64;
+    for ((path, _root), res) in candidates.iter().zip(results.into_iter()) {
+        seen += 1;
+        match res {
+            Ok(Some(rec)) => {
+                let key = path.to_string_lossy().to_string();
+                let unchanged = known
+                    .get(&key)
+                    .map(|(_, size, mtime)| *size == rec.size && *mtime == rec.mtime)
+                    .unwrap_or(false);
+                if unchanged {
+                    stats.skipped += 1;
+                } else {
+                    let existed = known.contains_key(&key);
+                    db.upsert_file(&rec)?;
+                    if existed {
+                        stats.updated += 1;
+                    } else {
+                        stats.inserted += 1;
+                    }
+                }
+            }
+            _ => stats.failed += 1,
+        }
+        if seen % 500 == 0 || seen == total_hint {
+            progress(ScanProgress {
+                seen,
+                total_hint,
+                current: path.to_string_lossy().to_string(),
+            });
+        }
+    }
+    stats.seen = seen;
+    Ok(stats)
+}
+
+fn build_record(path: &Path, root: &Path) -> Result<FileRecord> {
+    let meta = std::fs::metadata(path).map_err(|e| AppError::io(path, e))?;
+    let size = meta.len() as i64;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+
+    // 只读图片头拿宽高与真实格式
+    let reader = image::ImageReader::open(path)
+        .map_err(|e| AppError::io(path, e))?
+        .with_guessed_format()
+        .map_err(|e| AppError::io(path, e))?;
+    let format = reader
+        .format()
+        .map(|f| format!("{f:?}").to_ascii_lowercase());
+    let (width, height) = reader
+        .into_dimensions()
+        .map(|(w, h)| (Some(w as i64), Some(h as i64)))
+        .map_err(|e| AppError::Image {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+
+    Ok(FileRecord {
+        id: 0,
+        path: path.to_string_lossy().to_string(),
+        root: root.to_string_lossy().to_string(),
+        size,
+        mtime,
+        ext,
+        format,
+        width,
+        height,
+        short_side: width.zip(height).map(|(w, h)| w.min(h)),
+        pid: nameparse::parse_pid(stem),
+        artist: nameparse::parse_artist(stem),
+        content_hash: None,
+        phash: None,
+        gray_score: None,
+        decode_error: None,
+        scanned_at: Some(now_secs()),
+        fingerprinted_at: None,
+        status: "normal".into(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use image::{Rgb, RgbImage};
+    use std::fs;
+
+    fn make_png(path: &std::path::Path, w: u32, h: u32) {
+        let mut img = RgbImage::new(w, h);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = Rgb([(x % 256) as u8, (y % 256) as u8, 128]);
+        }
+        img.save(path).expect("save png");
+    }
+
+    #[test]
+    fn scans_images_and_records_dimensions() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        make_png(&root.join("a.png"), 800, 600);
+        make_png(&root.join("b.png"), 400, 1000);
+        fs::write(root.join("note.txt"), b"not an image").expect("write");
+
+        let db = Db::open_in_memory().expect("db");
+        db.migrate().expect("migrate");
+        let stats = scan(
+            &db,
+            &[root.to_path_buf()],
+            &ScanOptions::default(),
+            &mut |_| {},
+        )
+        .expect("scan");
+
+        assert_eq!(stats.inserted, 2, "两次图片应入库，txt 应被忽略");
+        assert_eq!(stats.failed, 0);
+        let a = db
+            .find_by_path(&root.join("a.png").to_string_lossy())
+            .expect("q")
+            .expect("some");
+        assert_eq!(
+            (a.width, a.height, a.short_side),
+            (Some(800), Some(600), Some(600))
+        );
+        assert_eq!(a.format.as_deref(), Some("png"));
+    }
+
+    #[test]
+    fn second_scan_skips_unchanged_files() {
+        let dir = tempfile::tempdir().expect("tmp");
+        make_png(&dir.path().join("a.png"), 100, 100);
+        let db = Db::open_in_memory().expect("db");
+        db.migrate().expect("migrate");
+
+        scan(
+            &db,
+            &[dir.path().to_path_buf()],
+            &ScanOptions::default(),
+            &mut |_| {},
+        )
+        .expect("first");
+        let second = scan(
+            &db,
+            &[dir.path().to_path_buf()],
+            &ScanOptions::default(),
+            &mut |_| {},
+        )
+        .expect("second");
+
+        assert_eq!(second.inserted, 0);
+        assert_eq!(second.skipped, 1, "大小与修改时间都没变，应跳过");
+    }
+
+    #[test]
+    fn corrupt_image_is_recorded_not_fatal() {
+        let dir = tempfile::tempdir().expect("tmp");
+        std::fs::write(dir.path().join("broken.jpg"), b"\xFF\xD8\xFF\xE0garbage").expect("write");
+        let db = Db::open_in_memory().expect("db");
+        db.migrate().expect("migrate");
+        let stats = scan(
+            &db,
+            &[dir.path().to_path_buf()],
+            &ScanOptions::default(),
+            &mut |_| {},
+        )
+        .expect("scan");
+        assert_eq!(stats.failed, 1);
+        assert_eq!(stats.inserted, 0);
+    }
+}

@@ -154,6 +154,12 @@ impl Db {
         Ok(rec)
     }
 
+    pub fn find_by_path(&self, path: &str) -> Result<Option<FileRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT * FROM files WHERE path = ?1")?;
+        Ok(stmt.query_row(params![path], row_to_record).optional()?)
+    }
+
     /// 返回 path -> (id, size, mtime)，供增量比对使用。
     pub fn path_fingerprints(&self) -> Result<std::collections::HashMap<String, (i64, i64, i64)>> {
         let conn = self.conn.lock();
