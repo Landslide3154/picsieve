@@ -3,6 +3,7 @@ pub mod db;
 pub mod error;
 pub mod fingerprint;
 pub mod gray;
+pub mod grouper;
 pub mod hashing;
 pub mod model;
 pub mod nameparse;

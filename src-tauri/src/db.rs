@@ -111,19 +111,34 @@ impl Db {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// 写入或更新一条文件记录。
+    ///
+    /// 两条重要语义：
+    /// 1. `status` 为空串时按 `normal` 处理，避免调用方漏填导致记录在筛选里消失。
+    /// 2. 走到 ON CONFLICT（说明大小或修改时间变了，文件内容可能已不同）时，
+    ///    会把旧的指纹列清空，逼着下一轮指纹重算——否则改过的图会留着旧指纹。
+    ///    但**不动 status**：已进隔离区的记录不能被一次扫描复活。
     pub fn upsert_file(&self, rec: &FileRecord) -> Result<i64> {
         let short_side = rec.compute_short_side();
         let now = now_secs();
+        let status = if rec.status.is_empty() {
+            "normal"
+        } else {
+            rec.status.as_str()
+        };
         let conn = self.conn.lock();
         conn.execute(
             r#"INSERT INTO files
-               (path, root, size, mtime, ext, format, width, height, short_side, pid, artist, scanned_at)
-               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+               (path, root, size, mtime, ext, format, width, height, short_side, pid, artist,
+                scanned_at, content_hash, phash, gray_score, decode_error, fingerprinted_at, status)
+               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
                ON CONFLICT(path) DO UPDATE SET
                  root=excluded.root, size=excluded.size, mtime=excluded.mtime,
                  ext=excluded.ext, format=excluded.format, width=excluded.width,
                  height=excluded.height, short_side=excluded.short_side,
-                 pid=excluded.pid, artist=excluded.artist, scanned_at=excluded.scanned_at"#,
+                 pid=excluded.pid, artist=excluded.artist, scanned_at=excluded.scanned_at,
+                 content_hash=NULL, phash=NULL, gray_score=NULL,
+                 decode_error=NULL, fingerprinted_at=NULL"#,
             params![
                 rec.path,
                 rec.root,
@@ -136,7 +151,13 @@ impl Db {
                 short_side,
                 rec.pid,
                 rec.artist,
-                now
+                now,
+                rec.content_hash,
+                rec.phash,
+                rec.gray_score,
+                rec.decode_error,
+                rec.fingerprinted_at,
+                status
             ],
         )?;
         let id: i64 = conn.query_row(
@@ -244,6 +265,74 @@ impl Db {
             |r| r.get(0),
         )?;
         Ok(n as u64)
+    }
+
+    pub fn files_by_content_hash(&self, h: &str) -> Result<Vec<FileRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT * FROM files WHERE content_hash=?1 AND status='normal'")?;
+        let rows = stmt.query_map(params![h], row_to_record)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn files_with_phash(&self) -> Result<Vec<crate::grouper::VisualRec>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, phash, pid, path FROM files WHERE status='normal' AND phash IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let hex: String = r.get(1)?;
+            let pid: Option<i64> = r.get(2)?;
+            let path: String = r.get(3)?;
+            let stem = std::path::Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            Ok((id, hex, pid, stem))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, hex, pid, stem) = row?;
+            if let Some(phash) = crate::phash::from_hex(&hex) {
+                out.push(crate::grouper::VisualRec {
+                    id,
+                    phash,
+                    pid,
+                    page: crate::grouper::page_of(&stem),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn clear_groups(&self, kind: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM dup_members WHERE group_id IN (SELECT id FROM dup_groups WHERE kind=?1)",
+            params![kind],
+        )?;
+        conn.execute("DELETE FROM dup_groups WHERE kind=?1", params![kind])?;
+        Ok(())
+    }
+
+    pub fn insert_group(&self, kind: &str, keep: Option<i64>) -> Result<i64> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO dup_groups (kind, keep_file_id, created_at) VALUES (?1,?2,?3)",
+            params![kind, keep, now_secs()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn insert_member(&self, group_id: i64, file_id: i64, distance: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT OR REPLACE INTO dup_members (group_id, file_id, distance) VALUES (?1,?2,?3)",
+            params![group_id, file_id, distance],
+        )?;
+        Ok(())
     }
 }
 
