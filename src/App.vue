@@ -9,6 +9,7 @@ import ScanProgress from './components/ScanProgress.vue'
 import SettingsView from './components/SettingsView.vue'
 import ThumbGrid from './components/ThumbGrid.vue'
 import TopBar, { type TabKey } from './components/TopBar.vue'
+import { useGroups } from './stores/groups'
 import { useLibrary } from './stores/library'
 import type { Settings } from './types'
 
@@ -18,6 +19,7 @@ const notice = ref('')
 /** 搬过文件/重新扫描后自增，让重复组页知道该重新加载 */
 const dataVersion = ref(0)
 const store = useLibrary()
+const groups = useGroups()
 let noticeTimer: number | undefined
 
 function showNotice(text: string, ms = 5000) {
@@ -89,6 +91,16 @@ function moveSelected() {
   void move([...store.selected])
 }
 
+/** 重复组页：把勾选的那些（要删的）一次性搬走 */
+function moveCheckedGroups() {
+  const ids = groups.checkedIds
+  if (!ids.length) {
+    showNotice('还没有勾选任何图片')
+    return
+  }
+  void move(ids)
+}
+
 function afterScan() {
   // 扫描/指纹结束后：分布图、格式列表、库内统计都变了
   void store.loadHistograms()
@@ -123,11 +135,12 @@ function afterScan() {
     </template>
   </div>
 
-  <!-- 底部一条常驻：中间显示库内信息，图库页再带上选中情况与操作 -->
+  <!-- 底部一条常驻：中间显示库内信息，图库页带选中操作、重复组页带勾选搬家 -->
   <ActionBar
     :tab="tab"
     :roots="settings?.roots ?? []"
     @move-to-quarantine="moveSelected"
+    @move-groups="moveCheckedGroups"
     @select-all="store.selectAllLoaded()"
   />
 

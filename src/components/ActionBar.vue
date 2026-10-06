@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { fmtBytes, fmtCount, fmtRelative } from '../format'
+import { useGroups } from '../stores/groups'
 import { useLibrary } from '../stores/library'
 import type { TabKey } from './TopBar.vue'
 
 const props = defineProps<{ tab: TabKey; roots: string[] }>()
 const store = useLibrary()
-defineEmits<{
+const groups = useGroups()
+const emit = defineEmits<{
   (e: 'move-to-quarantine'): void
   (e: 'select-all'): void
+  /** 重复组页：把勾选的（要删的）一次性搬走 */
+  (e: 'move-groups'): void
 }>()
 
 const isLibrary = computed(() => props.tab === 'library')
+const isGroups = computed(() => props.tab === 'groups')
 const lastScanText = computed(() => fmtRelative(store.stats.lastScanAt, '扫描'))
 const rootsTip = computed(() =>
   props.roots.length ? '扫描目录：\n' + props.roots.join('\n') : '还没有添加扫描目录',
@@ -19,7 +24,7 @@ const rootsTip = computed(() =>
 </script>
 
 <template>
-  <!-- 底部一条：左边是选中情况，中间是库内信息，右边是提示与主操作。
+  <!-- 底部一条：左边是选中/勾选情况，中间是库内信息，右边是提示与主操作。
        中间那栏永远居中，所以切页签、选中变化时它都不会左右跑。 -->
   <footer class="bar">
     <div class="side left">
@@ -37,6 +42,16 @@ const rootsTip = computed(() =>
           取消选择
         </button>
       </template>
+      <template v-else-if="isGroups">
+        <span class="num">
+          勾选 <b>{{ fmtCount(groups.checkedCount) }}</b> 张要删 ·
+          可省 <b>{{ fmtBytes(groups.checkedBytes) }}</b>
+        </span>
+        <button class="btn ghost sm" :disabled="!groups.checkedCount" @click="groups.clearChecked()">
+          全不勾（都留）
+        </button>
+        <button class="btn ghost sm" @click="groups.applyDefaults()">按建议勾选</button>
+      </template>
     </div>
 
     <div class="mid num" :title="rootsTip">
@@ -53,6 +68,16 @@ const rootsTip = computed(() =>
           @click="$emit('move-to-quarantine')"
         >
           移到隔离区
+        </button>
+      </template>
+      <template v-else-if="isGroups">
+        <span class="dim tiny hint">每组的默认勾选＝建议保留以外的那几张；不认同就点图改勾</span>
+        <button
+          class="btn danger"
+          :disabled="!groups.checkedCount"
+          @click="$emit('move-groups')"
+        >
+          把勾选的 {{ fmtCount(groups.checkedCount) }} 张移入隔离区
         </button>
       </template>
     </div>

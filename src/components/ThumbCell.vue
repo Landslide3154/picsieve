@@ -112,6 +112,7 @@ img {
   object-fit: cover;
   display: block;
   user-select: none;
+  transition: filter var(--speed) ease;
 }
 .ph {
   display: grid;
@@ -127,9 +128,10 @@ img {
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.5);
 }
 
-/* 选中：放大 + 投影「凸出来」，描边画在格子内部。
-   描边画在外面的话，两张挨着的图会互相压住对方的边；画在内侧就永远不会重叠。
-   颜色用暖橙：照片里蓝紫最多，橙色最不容易被画面吃掉。 */
+/* 选中：放大 + 投影「凸出来」＋一圈粗描边。
+   描边必须画在图片**上面**：之前用 inset 阴影画在 .frame 上，
+   而 box-shadow 是画在子元素下面的，图片一铺满就把整圈描边盖没了（实测就是这样）。
+   现在改用绝对定位的伪元素，保证任何照片上都看得见。 */
 .cell.sel {
   transform: scale(1.045);
   z-index: 3;
@@ -137,16 +139,26 @@ img {
     0 0 18px var(--sel-soft),
     0 14px 28px rgba(0, 0, 0, 0.55);
 }
-.cell.sel .frame {
-  box-shadow:
-    inset 0 0 0 6px var(--sel),
-    inset 0 0 0 8px rgba(255, 255, 255, 0.95);
+.cell.sel .frame::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 6px solid var(--sel);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.95);
+  pointer-events: none;
+  z-index: 3;
+}
+/* 选中的图整体提亮，跟周围一眼分开 */
+.cell.sel img {
+  filter: brightness(1.22) saturate(1.06);
 }
 .cell.sel .frame::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(255, 164, 36, 0.1), rgba(0, 0, 0, 0.18));
+  background: linear-gradient(180deg, rgba(255, 164, 36, 0.08), rgba(255, 164, 36, 0.04));
+  pointer-events: none;
 }
 .cell.focused {
   z-index: 2;

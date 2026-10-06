@@ -1,93 +1,52 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import {
-  countDupGroups,
-  fetchThumbUrl,
-  listDupGroups,
-  openExternal,
-  rebuildGroups,
-  setKeeper,
-} from '../api'
+import { fetchThumbUrl, openExternal, rebuildGroups } from '../api'
 import { fmtBytes, fmtCount } from '../format'
-import type { FileRecord, GroupView } from '../types'
+import { useGroups, type GroupTile } from '../stores/groups'
+import type { FileRecord } from '../types'
 
 const props = withDefaults(defineProps<{ refreshKey?: number }>(), { refreshKey: 0 })
-const emit = defineEmits<{ (e: 'move-to-quarantine', ids: number[]): void }>()
+const store = useGroups()
 
-/** 一次取多少组。密集平铺，滚到底自动再取一批 */
-const BATCH = 40
-/** 一组里最多画几张，多的折成「+N」 */
-const MAX_CARDS = 6
-
-interface Member {
-  file: FileRecord
-  /** 到基准图的汉明距离；换过保留项后是 null（不再假装知道） */
-  distance: number | null
-}
-
-interface Tile {
-  groupId: number
-  keep: FileRecord
-  members: Member[]
-  savings: number
-  reason: string
-  /** 用户手动改过保留项 */
-  manual: boolean
-}
-
-const tiles = ref<Tile[]>([])
-const groupTotal = ref(0)
-const kind = ref<'exact' | 'similar'>('exact')
-const loading = ref(false)
-const loadingMore = ref(false)
 const msg = ref('')
-const error = ref('')
-const thumbs = ref<Map<number, string>>(new Map())
-const scroller = ref<HTMLElement | null>(null)
+/** 一组里最多画几张，多的折成「+N」 */
+const MAX_CARDS = 8
 
-const hasMore = computed(() => tiles.value.length < groupTotal.value)
+const scroller = ref<HTMLElement | null>(null)
+const thumbs = ref<Map<number, string>>(new Map())
+
+/** 一屏能看到多少组（给顶部提示用） */
+const shown = computed(() => store.tiles.length)
 
 function fmt(bytes: number): string {
   return fmtBytes(bytes)
 }
 
-/** 汉明距离换算成「多少像」，比「偏差 4」好懂 */
 function similarity(distance: number | null): string {
   if (distance === null) return ''
   const pct = Math.max(0, Math.min(100, Math.round((1 - distance / 64) * 100)))
   return pct === 100 ? '一样' : pct + '% 像'
 }
 
-function visibleMembers(t: Tile): Member[] {
-  return t.members.slice(0, MAX_CARDS)
+/** 一组里要画出来的图（建议保留项放最前，便于对照） */
+function cardsOf(t: GroupTile): { file: FileRecord; distance: number | null }[] {
+  return [
+    { file: t.keep, distance: 0 },
+    ...t.members.map((m) => ({ file: m.file, distance: m.distance })),
+  ].slice(0, MAX_CARDS)
 }
 
-function toTile(g: GroupView): Tile {
-  return {
-    groupId: g.groupId,
-    keep: g.keep,
-    members: g.members.map((f, i) => ({ file: f, distance: g.distances[i] ?? null })),
-    savings: g.savings,
-    reason: g.keepReason,
-    manual: false,
-  }
-}
-
-// ---------- 缩略图：每批一到就按顺序取（并发由 api 里的闸门控制，最多 6 张） ----------
+// ---------- 缩略图：每批一到就取（并发由 api 闸门控制） ----------
 const loadedThumbs = new Set<number>()
-/** 离开这一页时还没排到的请求直接作废 */
 let pageAlive = true
 
-function loadThumbsFor(list: Tile[]) {
+function loadThumbsFor(list: GroupTile[]) {
   const queue: FileRecord[] = []
-  for (const t of list) {
-    queue.push(t.keep, ...t.members.slice(0, MAX_CARDS).map((m) => m.file))
-  }
+  for (const t of list) for (const c of cardsOf(t)) queue.push(c.file)
   const todo = queue.filter((f) => !loadedThumbs.has(f.id))
   if (!todo.length) return
   for (const f of todo) loadedThumbs.add(f.id)
   void (async () => {
-    // 每张到了就更新界面，不等整批
     await Promise.all(
       todo.map(async (f) => {
         try {
@@ -101,86 +60,42 @@ function loadThumbsFor(list: Tile[]) {
           next.set(f.id, url)
           thumbs.value = next
         } catch {
-          /* 读不出的图留个空位 */
+          /* 读不出的图留空位 */
         }
       }),
     )
   })()
 }
 
-// ---------- 加载 ----------
 async function load(reset = true) {
-  if (reset) {
-    loading.value = true
-    error.value = ''
-  } else {
-    if (loadingMore.value || !hasMore.value) return
-    loadingMore.value = true
-  }
-  try {
-    const offset = reset ? 0 : tiles.value.length
-    const list = await listDupGroups(kind.value, offset, BATCH)
-    const next = list.map(toTile)
-    tiles.value = reset ? next : tiles.value.concat(next)
-    loadThumbsFor(next)
-    if (reset) {
-      groupTotal.value = await countDupGroups(kind.value)
-      await nextTick()
-      if (scroller.value) scroller.value.scrollTop = 0
-    }
-  } catch (e) {
-    error.value = String(e)
-  } finally {
-    loading.value = false
-    loadingMore.value = false
+  const before = store.tiles.length
+  await store.load(reset)
+  const added = store.tiles.slice(before)
+  if (added.length) loadThumbsFor(added)
+  if (reset && scroller.value) {
+    await nextTick()
+    scroller.value.scrollTop = 0
   }
 }
 
 async function rebuild() {
-  loading.value = true
-  error.value = ''
   msg.value = '正在重建分组…'
   try {
     const r = await rebuildGroups()
     msg.value = `一模一样 ${r.exact} 组 · 看着像 ${r.similar} 组`
-    await load()
+    store.clearChecked()
+    await load(true)
   } catch (e) {
-    error.value = String(e)
+    store.error = String(e)
     msg.value = ''
-  } finally {
-    loading.value = false
   }
-}
-
-/** 点某一张 = 就留它（同组其余的一起搬走时它会被留下） */
-function keepAs(t: Tile, fileId: number) {
-  if (t.keep.id === fileId) return
-  const idx = t.members.findIndex((m) => m.file.id === fileId)
-  if (idx < 0) return
-  const oldKeep = t.keep
-  const picked = t.members[idx].file
-  const next = t.members.slice()
-  // 被点的那张上位移成「保留」，原来的保留项退回成员
-  next.splice(idx, 1, { file: oldKeep, distance: null })
-  t.keep = picked
-  t.members = next
-  t.savings = next.reduce((s, m) => s + m.file.size, 0)
-  t.manual = true
-  void setKeeper(t.groupId, fileId).catch((e) => {
-    error.value = String(e)
-  })
-}
-
-function moveGroup(t: Tile) {
-  const ids = t.members.map((m) => m.file.id)
-  if (ids.length) emit('move-to-quarantine', ids)
 }
 
 // ---------- 滚动 / 键盘 ----------
 function onScroll() {
   const el = scroller.value
   if (!el) return
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 600) void load(false)
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 800) void load(false)
 }
 
 let autoScroll = false
@@ -211,13 +126,13 @@ async function jumpToEnd() {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
   try {
     let idle = 0
-    while (autoScroll && hasMore.value) {
-      const before = tiles.value.length
+    while (autoScroll && store.hasMore) {
+      const before = store.tiles.length
       await load(false)
       if (!autoScroll) return
       await nextTick()
       el.scrollTop = el.scrollHeight
-      if (tiles.value.length === before) {
+      if (store.tiles.length === before) {
         idle++
         if (idle >= 3) break
         await sleep(150)
@@ -234,37 +149,46 @@ async function jumpToEnd() {
 }
 
 onMounted(() => {
-  void load()
+  void load(true)
 })
 onUnmounted(() => {
   pageAlive = false
 })
 
-watch(kind, () => void load())
 watch(
   () => props.refreshKey,
-  () => void load(),
+  () => {
+    store.clearChecked()
+    void load(true)
+  },
 )
 </script>
 
 <template>
   <section class="wrap">
     <header class="head">
-      <strong class="num">共 {{ fmtCount(groupTotal) }} 组</strong>
-      <span class="dim small num">已平铺 {{ fmtCount(tiles.length) }} 组</span>
+      <strong class="num">共 {{ fmtCount(store.total) }} 组</strong>
+      <span class="dim small num">已平铺 {{ fmtCount(shown) }} 组</span>
       <span class="grow" />
       <span v-if="msg" class="muted small">{{ msg }}</span>
-      <select v-model="kind" aria-label="重复组类型">
+      <select
+        :value="store.kind"
+        aria-label="重复组类型"
+        @change="store.setKind(($event.target as HTMLSelectElement).value as 'exact' | 'similar')"
+      >
         <option value="exact">一模一样</option>
         <option value="similar">看着像</option>
       </select>
-      <button class="btn" :disabled="loading" @click="rebuild">重建分组</button>
+      <button class="btn" :disabled="store.loading" @click="rebuild">重建分组</button>
     </header>
 
-    <p v-if="error" class="error-text pad">{{ error }}</p>
-    <p class="tip pad dim small">
-      点哪张就留哪张（默认按作品 ID → 路径更短 → 时间更早推荐），再按卡片上的按钮把其余的张搬进隔离区。
-      PgUp/PgDn 翻页 · Home 顶部 · End 一路到底（中途滚滑轮或点鼠标即可打断）
+    <p class="tip pad">
+      <b>点图上的勾</b>：打勾＝要删掉，取消勾＝留下。
+      两张相同的默认勾 1 张、三张的默认勾 2 张（也就是默认每组留下建议的那张）。
+      勾好以后按<b>最下面那个按钮</b>一次把勾上的全搬进隔离区。
+      <span class="dim">
+        PgUp/PgDn 翻页 · Home 顶部 · End 一路到底（滚滑轮或点鼠标即打断）
+      </span>
     </p>
 
     <div
@@ -278,69 +202,52 @@ watch(
       @wheel.passive="interrupt"
       @mousedown="interrupt"
     >
-      <p v-if="!tiles.length && !loading" class="empty">
+      <p v-if="!store.tiles.length && !store.loading" class="empty">
         还没有重复组，先跑一次指纹再点「重建分组」
       </p>
 
       <div class="ggrid">
-        <article v-for="(t, i) in tiles" :key="t.groupId" class="gcard" role="listitem">
+        <article v-for="(t, i) in store.tiles" :key="t.groupId" class="gcard" role="listitem">
           <header class="ghead">
             <span class="gno num">#{{ i + 1 }}</span>
             <span class="dim num">{{ t.keep.width }}×{{ t.keep.height }}</span>
-            <span class="save num">省 {{ fmt(t.savings) }}</span>
+            <span class="dim">·</span>
+            <span class="dim tiny">{{ t.reason }}</span>
           </header>
 
           <div class="thumbs">
-            <div
-              class="cell keep"
-              :title="`保留：${t.keep.path}`"
-              @click="keepAs(t, t.keep.id)"
+            <button
+              v-for="c in cardsOf(t)"
+              :key="c.file.id"
+              class="pic"
+              :class="{ del: store.isChecked(c.file.id) }"
+              :title="`${c.file.path}\n点一下：打勾=删掉 / 取消=留下`"
+              @click="store.toggle(c.file.id)"
             >
-              <img
-                :src="thumbs.get(t.keep.id) ?? ''"
-                alt=""
-                @dblclick="openExternal(t.keep.path)"
-              />
-              <span class="badge">✓</span>
-            </div>
-            <div
-              v-for="m in visibleMembers(t)"
-              :key="m.file.id"
-              class="cell"
-              :title="`改留这张：${m.file.path}`"
-              @click="keepAs(t, m.file.id)"
-            >
-              <img :src="thumbs.get(m.file.id) ?? ''" alt="" @dblclick="openExternal(m.file.path)" />
-              <span v-if="!t.manual && similarity(m.distance)" class="badge sim">
-                {{ similarity(m.distance) }}
+              <img :src="thumbs.get(c.file.id) ?? ''" alt="" @dblclick="openExternal(c.file.path)" />
+              <span v-if="!thumbs.get(c.file.id)" class="ph dim tiny">生成中…</span>
+              <span class="mark">
+                <span v-if="store.isChecked(c.file.id)" class="del-tag">删</span>
+                <span v-else class="keep-tag">留</span>
               </span>
-            </div>
-            <span v-if="t.members.length > MAX_CARDS" class="more dim tiny">
-              +{{ t.members.length - MAX_CARDS }}
+              <span v-if="similarity(c.distance)" class="sim num">{{ similarity(c.distance) }}</span>
+              <span class="sz num">{{ fmt(c.file.size) }}</span>
+            </button>
+            <span v-if="t.members.length + 1 > MAX_CARDS" class="more dim tiny">
+              +{{ t.members.length + 1 - MAX_CARDS }}
             </span>
           </div>
-
-          <footer class="gfoot">
-            <span class="reason dim tiny" :title="t.reason">
-              {{ t.manual ? '已手动指定保留这张' : t.reason }}
-            </span>
-            <button
-              class="btn danger sm"
-              :disabled="!t.members.length"
-              @click="moveGroup(t)"
-            >
-              其余 {{ t.members.length }} 张移入隔离区
-            </button>
-          </footer>
         </article>
       </div>
 
-      <p v-if="loadingMore" class="foot">正在加载更多组…</p>
-      <p v-else-if="!hasMore && tiles.length" class="foot">
-        全部 {{ fmtCount(tiles.length) }} 组都在这儿了
+      <p v-if="store.loadingMore" class="foot">正在加载更多组…</p>
+      <p v-else-if="!store.hasMore && store.tiles.length" class="foot">
+        全部 {{ fmtCount(store.tiles.length) }} 组都在这儿了
       </p>
-      <p v-else-if="loading" class="foot">加载中…</p>
+      <p v-else-if="store.loading" class="foot">加载中…</p>
     </div>
+
+    <p v-if="store.error" class="error-text pad">{{ store.error }}</p>
   </section>
 </template>
 
@@ -361,15 +268,17 @@ watch(
 .grow {
   flex: 1;
 }
-.save {
-  font-size: 12px;
-  color: var(--ok);
-}
 .pad {
   padding: 0 16px;
 }
 .tip {
   margin: 8px 0 2px;
+  font-size: 12px;
+  color: var(--fg);
+  line-height: 1.6;
+}
+.tip b {
+  color: var(--sel);
 }
 .error-text.pad {
   padding: 8px 16px;
@@ -381,26 +290,26 @@ watch(
   padding: 10px 14px 24px;
   outline: none;
 }
-/* 密集平铺：一屏尽量多放几组（宽屏一般 4~5 列 × 5 行） */
+/* 平铺但要看得清：卡片大一点，宽屏 3 列 */
 .ggrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(288px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(560px, 1fr));
+  gap: 12px;
 }
 .gcard {
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  padding: 7px 8px 6px;
+  padding: 8px 10px 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .ghead {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .gno {
   color: var(--dim);
@@ -409,14 +318,16 @@ watch(
 .thumbs {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  align-items: center;
+  gap: 8px;
+  align-items: flex-start;
 }
-.cell {
+.pic {
   position: relative;
-  width: 66px;
-  height: 66px;
-  border-radius: 6px;
+  width: 168px;
+  height: 200px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
   overflow: hidden;
   background: rgba(0, 0, 0, 0.3);
   cursor: pointer;
@@ -425,66 +336,79 @@ watch(
     transform var(--speed) ease,
     box-shadow var(--speed) ease;
 }
-.cell:hover {
-  transform: scale(1.06);
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.5);
+.pic:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.5);
 }
-.cell img {
+.pic img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
   display: block;
+  transition: filter var(--speed) ease;
 }
-.cell.keep {
+/* 打勾 = 要删：红框 + 提亮，一眼看清哪些会被删 */
+.pic.del {
   box-shadow:
-    inset 0 0 0 3px var(--sel),
-    inset 0 0 0 4.5px rgba(255, 255, 255, 0.9);
+    inset 0 0 0 3px rgba(255, 92, 92, 0.95),
+    inset 0 0 0 5px rgba(255, 255, 255, 0.85);
 }
-.badge {
+.pic.del img {
+  filter: brightness(1.18) saturate(1.05);
+}
+.pic:not(.del) {
+  box-shadow: inset 0 0 0 3px rgba(255, 164, 36, 0.9);
+}
+.mark {
   position: absolute;
-  left: 2px;
-  top: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
+  left: 6px;
+  top: 6px;
+}
+.del-tag,
+.keep-tag {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.del-tag {
+  background: #ff5c5c;
+  color: #2a0000;
+}
+.keep-tag {
   background: var(--sel);
   color: #2a1a00;
-  font-size: 11px;
-  font-weight: 800;
-  display: grid;
-  place-items: center;
 }
-.badge.sim {
-  left: auto;
-  right: 2px;
-  width: auto;
-  height: auto;
-  padding: 0 5px;
+.sim {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  padding: 0 6px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.62);
   color: #e6edf6;
-  font-weight: 600;
   font-size: 10px;
+}
+.sz {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #dfe7f2;
+  font-size: 10px;
+}
+/* 大图生成缩略图要几秒，这里明确写着「生成中…」，别让人以为是坏了 */
+.ph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
 }
 .more {
   align-self: center;
-}
-.gfoot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: auto;
-}
-.reason {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.gfoot :deep(.btn) {
-  padding: 3px 8px;
-  font-size: 11px;
 }
 .empty,
 .foot {
