@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { countFiles as apiCount, formatStats, histogram, libraryStats, queryFiles } from '../api'
 import type { FileRecord, Filter, FormatStat, Histogram, LibraryStats } from '../types'
 
@@ -34,9 +34,11 @@ export function emptyFilter(): Filter {
 
 export const useLibrary = defineStore('library', () => {
   const filter = ref<Filter>(emptyFilter())
-  const files = ref<FileRecord[]>([])
+  // 文件列表用 shallowRef：十万级的记录如果每条都包成响应式代理，
+  // 内存和访问开销都翻好几倍。这里整表替换（不是原地改），shallowRef 完全够用。
+  const files = shallowRef<FileRecord[]>([])
   const total = ref(0)
-  const selected = ref<Set<number>>(new Set())
+  const selected = shallowRef<Set<number>>(new Set())
   const stats = ref<LibraryStats>({ total: 0, bytes: 0, lastScanAt: 0 })
   const histPixels = ref<Histogram | null>(null)
   const histSize = ref<Histogram | null>(null)
@@ -93,12 +95,13 @@ export const useLibrary = defineStore('library', () => {
     } catch (e) {
       if (my === listSeq) error.value = String(e)
     } finally {
-      if (my === listSeq) loading.value = false
+      // 同上：复位标记不能加「序号没变」的条件，否则一次被打断就永久卡住
+      loading.value = false
     }
   }
 
-  /** 滚到底时接着取下一批 */
-  async function loadMore() {
+  /** 滚到底时接着取下一批。batch 默认一屏的量；End「一路到底」时用更大的批，少跑几趟 */
+  async function loadMore(batch = PAGE) {
     if (loading.value || loadingMore.value || !hasMore.value) return
     const my = listSeq
     loadingMore.value = true
@@ -106,7 +109,7 @@ export const useLibrary = defineStore('library', () => {
       const list = await queryFiles({
         ...filter.value,
         offset: files.value.length,
-        limit: PAGE,
+        limit: batch,
       })
       if (my !== listSeq) {
         // 取的过程中筛选条件变了，这批作废；稍后按新条件重试一次，
@@ -119,7 +122,10 @@ export const useLibrary = defineStore('library', () => {
     } catch (e) {
       if (my === listSeq) error.value = String(e)
     } finally {
-      if (my === listSeq) loadingMore.value = false
+      // 必须无条件复位：若期间筛选变了（my !== listSeq）而不复位，
+      // 这个标记会一直是 true，之后 loadMore 的入口守卫永远直接 return，
+      // 表现就是「滚到底再也不加载了」（实测踩到过）。
+      loadingMore.value = false
     }
   }
 

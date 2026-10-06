@@ -21,25 +21,35 @@ const emit = defineEmits<{
 
 const url = ref('')
 const failed = ref(false)
+/** 这个格子还活着吗：滚走的格子要取消还没开始的缩略图请求 */
+let alive = true
+let seq = 0
 
 watch(
   () => props.file.id,
   async () => {
+    const my = ++seq
     if (url.value) {
       URL.revokeObjectURL(url.value)
       url.value = ''
     }
     failed.value = false
     try {
-      url.value = await fetchThumbUrl(props.file.id)
+      const next = await fetchThumbUrl(props.file.id, () => !alive || my !== seq)
+      if (!alive || my !== seq) {
+        if (next) URL.revokeObjectURL(next)
+        return
+      }
+      url.value = next
     } catch {
-      failed.value = true
+      if (alive && my === seq) failed.value = true
     }
   },
   { immediate: true },
 )
 
 onUnmounted(() => {
+  alive = false
   if (url.value) URL.revokeObjectURL(url.value)
 })
 

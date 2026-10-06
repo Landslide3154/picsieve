@@ -291,6 +291,10 @@ onMounted(() => {
         />
         读不出的
       </label>
+      <p v-if="f.onlyDuplicated" class="hint">
+        「重复」是成对的：搬走其中一张后，和它一样的那张就不再算重复、会从这个列表里消失
+        （文件还在原地，去掉这个勾就能看到）
+      </p>
     </section>
 
     <section class="facet result">

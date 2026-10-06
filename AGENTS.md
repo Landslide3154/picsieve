@@ -27,6 +27,9 @@ pnpm tauri build    # 生产构建（NSIS 安装包）
 - **端到端验证（本项目的看家手段，改了界面/交互必跑）**：`tools/e2e-smoke.mjs`、`tools/e2e-quarantine.mjs` 经 **WebView2 远程调试口**真实点击界面并核对磁盘 sha256——启动应用时带
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`
   （`tools/cdp.mjs` 是共用的 CDP 封装；`.e2e/` 下放检查脚本与截图）
+- **凡会真动磁盘的用例（移入隔离区等）必须跑沙箱**：启动时带 `PICSIEVE_DATA_DIR=<临时目录>`
+  即可把数据库/设置指到别处。**改 `LOCALAPPDATA` 环境变量对 Tauri 无效**（它走系统「已知文件夹」API），
+  那样会写进用户的真实库。参考 `.e2e/reset-sandbox2.ps1` + `.e2e/verify-round7.mjs`
 - 造测试图：`tools/make_test_images.py`；图标：`tools/make_icon.py`
 
 ## 文档约定

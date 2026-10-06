@@ -46,7 +46,7 @@ const rootsTip = computed(() =>
 
     <div class="side right">
       <template v-if="isLibrary">
-        <span class="dim tiny hint">单击选中 · Shift 连选 · Ctrl+A 全选 · 空格预览 · Delete 移入隔离区</span>
+        <span class="dim tiny hint">Ctrl+A 全选 · 空格预览 · PgUp/PgDn 翻页 · End 一路到底 · Delete 移入隔离区</span>
         <button
           class="btn danger"
           :disabled="!store.selectedCount"

@@ -15,13 +15,15 @@ import type { Settings } from './types'
 const tab = ref<TabKey>('library')
 const settings = ref<Settings | null>(null)
 const notice = ref('')
+/** 搬过文件/重新扫描后自增，让重复组页知道该重新加载 */
+const dataVersion = ref(0)
 const store = useLibrary()
 let noticeTimer: number | undefined
 
-function showNotice(text: string) {
+function showNotice(text: string, ms = 5000) {
   notice.value = text
   if (noticeTimer !== undefined) clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 5000)
+  noticeTimer = window.setTimeout(() => (notice.value = ''), ms)
 }
 
 async function loadSettings() {
@@ -57,12 +59,27 @@ watch(tab, (t) => {
 
 async function move(ids: number[]) {
   if (!ids.length) return
+  const moved = new Set(ids)
+  const before = new Set(store.files.map((f) => f.id))
   try {
     const r = await moveToQuarantine(ids)
-    showNotice(`已移入隔离区 ${r.moved} 张${r.failed ? `，失败 ${r.failed} 张` : ''}，可随时搬回`)
     store.clearSelection()
     await store.refreshNow()
     await store.loadStats()
+    dataVersion.value++
+
+    // 只搬走传进来的那几张。但「只看重复」这类条件会让别的图也跟着消失：
+    // 移走 A 之后，和它一模一样的那张 B 就不再是重复图，于是从列表里掉出去——
+    // 文件其实没动。这里必须说清楚，否则会被当成「把两张都搬走了」。
+    const after = new Set(store.files.map((f) => f.id))
+    const dropped = [...before].filter((id) => !after.has(id) && !moved.has(id)).length
+    const tail = dropped
+      ? `。另有 ${dropped} 张因为同伴被搬走、不再是重复图，从当前列表掉出去了（文件没动，去掉「有重复的」就能看到）`
+      : ''
+    showNotice(
+      `已移入隔离区 ${r.moved} 张${r.failed ? `，失败 ${r.failed} 张` : ''}${tail}。随时可搬回`,
+      dropped ? 11000 : 5000,
+    )
   } catch (e) {
     showNotice('移入失败：' + String(e))
   }
@@ -78,6 +95,7 @@ function afterScan() {
   void store.loadFormats()
   void store.loadStats()
   void store.refreshNow()
+  dataVersion.value++
 }
 </script>
 
@@ -88,7 +106,11 @@ function afterScan() {
     <ScanProgress v-if="tab === 'scan'" @changed="afterScan" />
     <SettingsView v-else-if="tab === 'settings'" @saved="loadSettings" />
     <QuarantineView v-else-if="tab === 'quarantine'" @changed="afterScan" />
-    <DupGroupView v-else-if="tab === 'groups'" @move-to-quarantine="move" />
+    <DupGroupView
+      v-else-if="tab === 'groups'"
+      :refresh-key="dataVersion"
+      @move-to-quarantine="move"
+    />
     <template v-else>
       <div class="body">
         <FilterPanel />

@@ -34,6 +34,35 @@ const visible = computed(() =>
 const firstVisibleIndex = computed(() => startRow.value * columns.value)
 
 const dupCount = ref<Map<number, number>>(new Map())
+// 用 content_hash 统计每张图的同内容成员数，供 ×N 角标使用。
+// 增量维护：翻到十万张时如果每来一批就整表重算，会变成 O(n²) 的卡顿源。
+let hashIds = new Map<string, number[]>()
+let countedUpTo = 0
+
+function computeDupCounts() {
+  const files = store.files
+  if (files.length < countedUpTo) {
+    // 整表被换掉（改筛选/排序）：从头再来
+    hashIds = new Map()
+    countedUpTo = 0
+    dupCount.value = new Map()
+  }
+  if (files.length === countedUpTo) return
+  const m = new Map(dupCount.value)
+  for (let i = countedUpTo; i < files.length; i++) {
+    const f = files[i]
+    if (!f.contentHash) continue
+    const arr = hashIds.get(f.contentHash) ?? []
+    if (!arr.length) hashIds.set(f.contentHash, arr)
+    arr.push(f.id)
+    // 同内容的旧记录数量也要跟着涨，所以整组一起刷新
+    for (const id of arr) m.set(id, arr.length)
+  }
+  countedUpTo = files.length
+  dupCount.value = m
+}
+
+watch(() => store.files, computeDupCounts, { immediate: true })
 const focusedIndex = ref(-1)
 const lastClicked = ref(-1)
 const tip = ref<{ file: FileRecord; anchor: DOMRect } | null>(null)
@@ -44,25 +73,11 @@ const previewFile = computed(() =>
   previewIndex.value >= 0 ? (store.files[previewIndex.value] ?? null) : null,
 )
 
-/** 用 content_hash 统计每张图的同内容成员数，供 ×N 角标使用。 */
-function computeDupCounts() {
-  const byHash = new Map<string, number>()
-  for (const f of store.files) {
-    if (f.contentHash) byHash.set(f.contentHash, (byHash.get(f.contentHash) ?? 0) + 1)
-  }
-  const m = new Map<number, number>()
-  for (const f of store.files) {
-    if (f.contentHash) m.set(f.id, byHash.get(f.contentHash) ?? 1)
-  }
-  dupCount.value = m
-}
-
-watch(() => store.files, computeDupCounts, { immediate: true })
-
 // 结果被整表换掉（改筛选/排序/搜索）时回到顶部，并清掉悬停残留
 watch(
   () => store.files[0]?.id,
   () => {
+    interruptAuto()
     tip.value = null
     focusedIndex.value = -1
     lastClicked.value = -1
@@ -170,12 +185,83 @@ async function focusTo(index: number) {
   else if (top + CELL_H > el.scrollTop + el.clientHeight) {
     el.scrollTop = top + CELL_H - el.clientHeight
   }
+  scrollTop.value = el.scrollTop
+}
+
+/**
+ * 翻页：直接按容器滚一屏（留一行重叠），比「把某个格子滚进视野」更像翻页——
+ * 后者在目标行本来就可见时一格都不会动。
+ */
+function page(direction: 1 | -1) {
+  interruptAuto()
+  const el = scroller.value
+  if (!el) return
+  const step = Math.max(CELL_H, el.clientHeight - CELL_H)
+  const max = Math.max(0, el.scrollHeight - el.clientHeight)
+  el.scrollTop = Math.max(0, Math.min(max, el.scrollTop + direction * step))
+  scrollTop.value = el.scrollTop
+  // 焦点格跟着翻页走，键盘操作不丢
+  if (store.files.length) {
+    const firstRow = Math.max(0, Math.round(el.scrollTop / CELL_H))
+    focusedIndex.value = Math.min(store.files.length - 1, firstRow * columns.value)
+  }
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - CELL_H * 2) void store.loadMore()
+}
+
+/** End「一路到底」的自动加载开关：用户任何其它操作都会把它关掉 */
+let autoScroll = false
+
+function interruptAuto() {
+  autoScroll = false
+}
+
+/**
+ * End 键：滚到最底，并且一路上不断取下一批，直到全部取完。
+ * 中途用户滚滑轮、点鼠标、按别的键（或者换页签）就立刻停。
+ */
+async function jumpToEnd() {
+  const el = scroller.value
+  if (!el) return
+  autoScroll = true
+  // 一路到底时用大批次（默认 300 太碎，十万张要跑几百趟、每趟还要按 OFFSET 跳行）
+  const BIG = 3000
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  try {
+    let idle = 0
+    while (autoScroll && store.hasMore) {
+      const before = store.files.length
+      await store.loadMore(BIG)
+      if (!autoScroll) return
+      await nextTick()
+      el.scrollTop = el.scrollHeight
+      scrollTop.value = el.scrollTop
+      // 这批没进来（可能刚好在刷新，或又到底了）：最多空等 3 次就收手
+      if (store.files.length === before) {
+        idle++
+        if (idle >= 3) break
+        await sleep(150)
+      } else {
+        idle = 0
+      }
+    }
+    if (!autoScroll) return
+    await nextTick()
+    el.scrollTop = el.scrollHeight
+    scrollTop.value = el.scrollTop
+    if (store.files.length) focusedIndex.value = store.files.length - 1
+  } finally {
+    autoScroll = false
+  }
 }
 
 function onKeydown(e: KeyboardEvent) {
   const cols = columns.value
   const cur = focusedIndex.value
   const n = store.files.length
+
+  // 除了 End 自己，按任何其它键都算打断「一路到底」的自动加载
+  if (e.key !== 'End') interruptAuto()
+
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
     e.preventDefault()
     store.selectAllLoaded()
@@ -205,17 +291,32 @@ function onKeydown(e: KeyboardEvent) {
     emit('quarantine', [...store.selected])
     return
   }
+  if (e.key === 'PageDown' || e.key === 'PageUp') {
+    e.preventDefault()
+    page(e.key === 'PageDown' ? 1 : -1)
+    return
+  }
+  if (e.key === 'Home') {
+    e.preventDefault()
+    interruptAuto()
+    const el = scroller.value
+    if (el) {
+      el.scrollTop = 0
+      scrollTop.value = 0
+    }
+    void focusTo(0)
+    return
+  }
+  if (e.key === 'End') {
+    e.preventDefault()
+    void jumpToEnd()
+    return
+  }
   const step =
     e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowDown' ? cols : e.key === 'ArrowUp' ? -cols : 0
   if (step !== 0) {
     e.preventDefault()
     void focusTo(cur < 0 ? 0 : cur + step)
-  } else if (e.key === 'Home') {
-    e.preventDefault()
-    void focusTo(0)
-  } else if (e.key === 'End') {
-    e.preventDefault()
-    void focusTo(n - 1)
   }
 }
 
@@ -236,6 +337,8 @@ function navigatePreview(delta: number) {
     aria-multiselectable="true"
     @scroll.passive="onScroll"
     @keydown="onKeydown"
+    @wheel.passive="interruptAuto"
+    @mousedown="interruptAuto"
   >
     <div class="grid-inner" :style="{ height: totalH + 'px' }">
       <div

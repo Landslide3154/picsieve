@@ -37,7 +37,15 @@ pub fn run() {
         )
         .setup(|app| {
             // 用 LocalAppData：数据库与缩略图缓存体量大，不该跟着漫游配置文件走。
-            let app_data = app.path().app_local_data_dir().expect("app data dir");
+            //
+            // 例外：设了环境变量 PICSIEVE_DATA_DIR 就用它。这是给端到端测试留的开关——
+            // 「移入隔离区」这类会真动磁盘的流程必须在独立数据目录里跑，
+            // 否则测试会污染用户自己的库（踩过：改 LOCALAPPDATA 对 Tauri 无效，
+            // 它取的是系统「已知文件夹」API，结果测试数据写进了真实数据库）。
+            let app_data = match std::env::var_os("PICSIEVE_DATA_DIR") {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => app.path().app_local_data_dir().expect("app data dir"),
+            };
             std::fs::create_dir_all(&app_data).ok();
             let db = db::Db::open(&app_data.join("picsieve.db")).expect("open db");
             db.migrate().expect("migrate");

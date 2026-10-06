@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   countDupGroups,
   fetchThumbUrl,
@@ -11,67 +11,128 @@ import {
 import { fmtBytes, fmtCount } from '../format'
 import type { FileRecord, GroupView } from '../types'
 
+const props = withDefaults(defineProps<{ refreshKey?: number }>(), { refreshKey: 0 })
 const emit = defineEmits<{ (e: 'move-to-quarantine', ids: number[]): void }>()
 
-const groups = ref<GroupView[]>([])
+/** 一次取多少组。密集平铺，滚到底自动再取一批 */
+const BATCH = 40
+/** 一组里最多画几张，多的折成「+N」 */
+const MAX_CARDS = 6
+
+interface Member {
+  file: FileRecord
+  /** 到基准图的汉明距离；换过保留项后是 null（不再假装知道） */
+  distance: number | null
+}
+
+interface Tile {
+  groupId: number
+  keep: FileRecord
+  members: Member[]
+  savings: number
+  reason: string
+  /** 用户手动改过保留项 */
+  manual: boolean
+}
+
+const tiles = ref<Tile[]>([])
 const groupTotal = ref(0)
-const index = ref(0)
 const kind = ref<'exact' | 'similar'>('exact')
-const focus = ref(-1)
 const loading = ref(false)
+const loadingMore = ref(false)
 const msg = ref('')
 const error = ref('')
 const thumbs = ref<Map<number, string>>(new Map())
+const scroller = ref<HTMLElement | null>(null)
 
-const current = computed(() => groups.value[index.value])
-const removable = computed(() => (current.value ? current.value.members.map((m) => m.id) : []))
+const hasMore = computed(() => tiles.value.length < groupTotal.value)
 
 function fmt(bytes: number): string {
   return fmtBytes(bytes)
 }
 
 /** 汉明距离换算成「多少像」，比「偏差 4」好懂 */
-function similarity(distance: number | undefined): string {
-  if (distance === undefined) return ''
+function similarity(distance: number | null): string {
+  if (distance === null) return ''
   const pct = Math.max(0, Math.min(100, Math.round((1 - distance / 64) * 100)))
-  return pct + '% 像'
+  return pct === 100 ? '一样' : pct + '% 像'
 }
 
-async function loadThumbs(files: FileRecord[]) {
-  const next = new Map(thumbs.value)
-  for (const f of files) {
-    if (next.has(f.id)) continue
-    try {
-      next.set(f.id, await fetchThumbUrl(f.id))
-    } catch {
-      /* 读不出的图就显示占位 */
-    }
+function visibleMembers(t: Tile): Member[] {
+  return t.members.slice(0, MAX_CARDS)
+}
+
+function toTile(g: GroupView): Tile {
+  return {
+    groupId: g.groupId,
+    keep: g.keep,
+    members: g.members.map((f, i) => ({ file: f, distance: g.distances[i] ?? null })),
+    savings: g.savings,
+    reason: g.keepReason,
+    manual: false,
   }
-  thumbs.value = next
 }
 
-function onGroupChange() {
-  focus.value = -1
-  const g = current.value
-  if (g) void loadThumbs([g.keep, ...g.members])
+// ---------- 缩略图：每批一到就按顺序取（并发由 api 里的闸门控制，最多 6 张） ----------
+const loadedThumbs = new Set<number>()
+/** 离开这一页时还没排到的请求直接作废 */
+let pageAlive = true
+
+function loadThumbsFor(list: Tile[]) {
+  const queue: FileRecord[] = []
+  for (const t of list) {
+    queue.push(t.keep, ...t.members.slice(0, MAX_CARDS).map((m) => m.file))
+  }
+  const todo = queue.filter((f) => !loadedThumbs.has(f.id))
+  if (!todo.length) return
+  for (const f of todo) loadedThumbs.add(f.id)
+  void (async () => {
+    // 每张到了就更新界面，不等整批
+    await Promise.all(
+      todo.map(async (f) => {
+        try {
+          const url = await fetchThumbUrl(f.id, () => !pageAlive)
+          if (!url) return
+          if (!pageAlive) {
+            URL.revokeObjectURL(url)
+            return
+          }
+          const next = new Map(thumbs.value)
+          next.set(f.id, url)
+          thumbs.value = next
+        } catch {
+          /* 读不出的图留个空位 */
+        }
+      }),
+    )
+  })()
 }
 
-async function load() {
-  loading.value = true
-  error.value = ''
+// ---------- 加载 ----------
+async function load(reset = true) {
+  if (reset) {
+    loading.value = true
+    error.value = ''
+  } else {
+    if (loadingMore.value || !hasMore.value) return
+    loadingMore.value = true
+  }
   try {
-    const [list, total] = await Promise.all([
-      listDupGroups(kind.value, 0, 500),
-      countDupGroups(kind.value),
-    ])
-    groups.value = list
-    groupTotal.value = total
-    index.value = 0
-    onGroupChange()
+    const offset = reset ? 0 : tiles.value.length
+    const list = await listDupGroups(kind.value, offset, BATCH)
+    const next = list.map(toTile)
+    tiles.value = reset ? next : tiles.value.concat(next)
+    loadThumbsFor(next)
+    if (reset) {
+      groupTotal.value = await countDupGroups(kind.value)
+      await nextTick()
+      if (scroller.value) scroller.value.scrollTop = 0
+    }
   } catch (e) {
     error.value = String(e)
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
 }
 
@@ -91,73 +152,106 @@ async function rebuild() {
   }
 }
 
-function next() {
-  if (index.value < groups.value.length - 1) {
-    index.value++
-    onGroupChange()
-  }
-}
-function prev() {
-  if (index.value > 0) {
-    index.value--
-    onGroupChange()
-  }
+/** 点某一张 = 就留它（同组其余的一起搬走时它会被留下） */
+function keepAs(t: Tile, fileId: number) {
+  if (t.keep.id === fileId) return
+  const idx = t.members.findIndex((m) => m.file.id === fileId)
+  if (idx < 0) return
+  const oldKeep = t.keep
+  const picked = t.members[idx].file
+  const next = t.members.slice()
+  // 被点的那张上位移成「保留」，原来的保留项退回成员
+  next.splice(idx, 1, { file: oldKeep, distance: null })
+  t.keep = picked
+  t.members = next
+  t.savings = next.reduce((s, m) => s + m.file.size, 0)
+  t.manual = true
+  void setKeeper(t.groupId, fileId).catch((e) => {
+    error.value = String(e)
+  })
 }
 
-async function keepAs(fileId: number) {
-  const g = current.value
-  if (!g || g.keep.id === fileId) return
-  await setKeeper(g.groupId, fileId)
-  const old = g.keep
-  const picked = g.members.find((m) => m.id === fileId)
-  if (picked) {
-    g.keep = picked
-    g.members = [old, ...g.members.filter((m) => m.id !== fileId)]
-    if (g.distances.length) g.distances = [0, ...g.distances.filter((_, i) => g.members[i + 1]?.id !== old.id)]
-  }
-  focus.value = -1
+function moveGroup(t: Tile) {
+  const ids = t.members.map((m) => m.file.id)
+  if (ids.length) emit('move-to-quarantine', ids)
+}
+
+// ---------- 滚动 / 键盘 ----------
+function onScroll() {
+  const el = scroller.value
+  if (!el) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 600) void load(false)
+}
+
+let autoScroll = false
+function interrupt() {
+  autoScroll = false
 }
 
 function onKey(e: KeyboardEvent) {
-  if (e.key === 'ArrowRight') next()
-  else if (e.key === 'ArrowLeft') prev()
-  else if (e.key === 'ArrowDown') {
-    const n = removable.value.length
-    if (n) focus.value = Math.min(n - 1, focus.value + 1)
-  } else if (e.key === 'ArrowUp') {
-    focus.value = Math.max(-1, focus.value - 1)
-  } else if (e.key === ' ') {
+  if (e.key !== 'End') interrupt()
+  const el = scroller.value
+  if (!el) return
+  if (e.key === 'PageDown' || e.key === 'PageUp') {
     e.preventDefault()
-    if (focus.value >= 0) {
-      const m = removable.value[focus.value]
-      if (m !== undefined) void keepAs(m)
+    el.scrollTop += (e.key === 'PageDown' ? 1 : -1) * Math.max(120, el.clientHeight - 100)
+  } else if (e.key === 'Home') {
+    e.preventDefault()
+    el.scrollTop = 0
+  } else if (e.key === 'End') {
+    e.preventDefault()
+    void jumpToEnd()
+  }
+}
+
+async function jumpToEnd() {
+  const el = scroller.value
+  if (!el) return
+  autoScroll = true
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  try {
+    let idle = 0
+    while (autoScroll && hasMore.value) {
+      const before = tiles.value.length
+      await load(false)
+      if (!autoScroll) return
+      await nextTick()
+      el.scrollTop = el.scrollHeight
+      if (tiles.value.length === before) {
+        idle++
+        if (idle >= 3) break
+        await sleep(150)
+      } else {
+        idle = 0
+      }
     }
+    if (!autoScroll) return
+    await nextTick()
+    el.scrollTop = el.scrollHeight
+  } finally {
+    autoScroll = false
   }
 }
 
 onMounted(() => {
   void load()
-  window.addEventListener('keydown', onKey)
 })
-onUnmounted(() => window.removeEventListener('keydown', onKey))
+onUnmounted(() => {
+  pageAlive = false
+})
 
-// 换类型时重载
 watch(kind, () => void load())
+watch(
+  () => props.refreshKey,
+  () => void load(),
+)
 </script>
 
 <template>
   <section class="wrap">
     <header class="head">
-      <strong v-if="groups.length" class="num">
-        第 {{ index + 1 }} 组 / 共 {{ fmtCount(groupTotal) }} 组
-      </strong>
-      <span v-else-if="!loading" class="dim">还没有重复组，先跑一次指纹再点「重建分组」</span>
-      <span v-else class="dim">加载中…</span>
-
-      <span v-if="current" class="save num">
-        这一组能省 {{ fmt(current.savings) }}
-      </span>
-
+      <strong class="num">共 {{ fmtCount(groupTotal) }} 组</strong>
+      <span class="dim small num">已平铺 {{ fmtCount(tiles.length) }} 组</span>
       <span class="grow" />
       <span v-if="msg" class="muted small">{{ msg }}</span>
       <select v-model="kind" aria-label="重复组类型">
@@ -168,51 +262,85 @@ watch(kind, () => void load())
     </header>
 
     <p v-if="error" class="error-text pad">{{ error }}</p>
+    <p class="tip pad dim small">
+      点哪张就留哪张（默认按作品 ID → 路径更短 → 时间更早推荐），再按卡片上的按钮把其余的张搬进隔离区。
+      PgUp/PgDn 翻页 · Home 顶部 · End 一路到底（中途滚滑轮或点鼠标即可打断）
+    </p>
 
-    <div v-if="current" class="row">
-      <article class="card keep" :class="{ focus: focus === -1 }">
-        <img :src="thumbs.get(current.keep.id) ?? ''" alt="" @dblclick="openExternal(current.keep.path)" />
-        <div class="meta">
-          <strong class="num">{{ current.keep.width }} × {{ current.keep.height }}</strong>
-          <span class="num">{{ fmt(current.keep.size) }} · {{ (current.keep.ext ?? '').toUpperCase() }}</span>
-          <code class="truncate" :title="current.keep.path">{{ current.keep.path }}</code>
-          <em>✓ 保留这张</em>
-          <span v-if="current.keepReason" class="reason">建议理由：{{ current.keepReason }}</span>
-        </div>
-      </article>
+    <div
+      ref="scroller"
+      class="gscroll"
+      tabindex="0"
+      role="list"
+      aria-label="重复组列表"
+      @scroll.passive="onScroll"
+      @keydown="onKey"
+      @wheel.passive="interrupt"
+      @mousedown="interrupt"
+    >
+      <p v-if="!tiles.length && !loading" class="empty">
+        还没有重复组，先跑一次指纹再点「重建分组」
+      </p>
 
-      <article
-        v-for="(m, i) in current.members"
-        :key="m.id"
-        class="card"
-        :class="{ focus: focus === i }"
-      >
-        <img :src="thumbs.get(m.id) ?? ''" alt="" @dblclick="openExternal(m.path)" />
-        <div class="meta">
-          <strong class="num">{{ m.width }} × {{ m.height }}</strong>
-          <span class="num">{{ fmt(m.size) }} · {{ (m.ext ?? '').toUpperCase() }}</span>
-          <span v-if="current.distances[i] !== undefined" class="dist num">
-            {{ similarity(current.distances[i]) }}
-          </span>
-          <code class="truncate" :title="m.path">{{ m.path }}</code>
-          <button class="btn ghost sm" @click="keepAs(m.id)">改留这张</button>
-        </div>
-      </article>
+      <div class="ggrid">
+        <article v-for="(t, i) in tiles" :key="t.groupId" class="gcard" role="listitem">
+          <header class="ghead">
+            <span class="gno num">#{{ i + 1 }}</span>
+            <span class="dim num">{{ t.keep.width }}×{{ t.keep.height }}</span>
+            <span class="save num">省 {{ fmt(t.savings) }}</span>
+          </header>
+
+          <div class="thumbs">
+            <div
+              class="cell keep"
+              :title="`保留：${t.keep.path}`"
+              @click="keepAs(t, t.keep.id)"
+            >
+              <img
+                :src="thumbs.get(t.keep.id) ?? ''"
+                alt=""
+                @dblclick="openExternal(t.keep.path)"
+              />
+              <span class="badge">✓</span>
+            </div>
+            <div
+              v-for="m in visibleMembers(t)"
+              :key="m.file.id"
+              class="cell"
+              :title="`改留这张：${m.file.path}`"
+              @click="keepAs(t, m.file.id)"
+            >
+              <img :src="thumbs.get(m.file.id) ?? ''" alt="" @dblclick="openExternal(m.file.path)" />
+              <span v-if="!t.manual && similarity(m.distance)" class="badge sim">
+                {{ similarity(m.distance) }}
+              </span>
+            </div>
+            <span v-if="t.members.length > MAX_CARDS" class="more dim tiny">
+              +{{ t.members.length - MAX_CARDS }}
+            </span>
+          </div>
+
+          <footer class="gfoot">
+            <span class="reason dim tiny" :title="t.reason">
+              {{ t.manual ? '已手动指定保留这张' : t.reason }}
+            </span>
+            <button
+              class="btn danger sm"
+              :disabled="!t.members.length"
+              @click="moveGroup(t)"
+            >
+              其余 {{ t.members.length }} 张移入隔离区
+            </button>
+          </footer>
+        </article>
+      </div>
+
+      <p v-if="loadingMore" class="foot">正在加载更多组…</p>
+      <p v-else-if="!hasMore && tiles.length" class="foot">
+        全部 {{ fmtCount(tiles.length) }} 组都在这儿了
+      </p>
+      <p v-else-if="loading" class="foot">加载中…</p>
     </div>
-
-    <footer class="foot">
-      <button class="btn" :disabled="index === 0" @click="prev">← 上一组</button>
-      <button class="btn" :disabled="index >= groups.length - 1" @click="next">下一组 →</button>
-      <span class="dim tiny">← → 换组 · ↑ ↓ 选成员 · 空格改留这张 · 双击图片用系统程序打开</span>
-      <span class="grow" />
-      <button
-        class="btn danger"
-        :disabled="!removable.length"
-        @click="emit('move-to-quarantine', removable)"
-      >
-        保留这张，其余 {{ removable.length }} 张移入隔离区
-      </button>
-    </footer>
   </section>
 </template>
 
@@ -238,70 +366,135 @@ watch(kind, () => void load())
   color: var(--ok);
 }
 .pad {
+  padding: 0 16px;
+}
+.tip {
+  margin: 8px 0 2px;
+}
+.error-text.pad {
   padding: 8px 16px;
 }
-.row {
-  display: flex;
-  gap: 14px;
-  padding: 16px;
-  overflow-x: auto;
+.gscroll {
   flex: 1;
-  align-items: flex-start;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 14px 24px;
+  outline: none;
 }
-.card {
-  width: 268px;
-  flex: none;
+/* 密集平铺：一屏尽量多放几组（宽屏一般 4~5 列 × 5 行） */
+.ggrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(288px, 1fr));
+  gap: 10px;
+}
+.gcard {
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  background: var(--card);
-  transition:
-    box-shadow var(--speed) ease,
-    transform var(--speed) ease;
-}
-.card.keep {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-bright);
-}
-.card.focus {
-  box-shadow: 0 0 0 2px var(--warn);
-}
-.card img {
-  width: 100%;
-  height: 320px;
-  object-fit: contain;
-  background: rgba(0, 0, 0, 0.28);
-  display: block;
-  cursor: zoom-in;
-}
-.meta {
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 7px 8px 6px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 9px 10px;
-  font-size: 12px;
+  gap: 6px;
 }
-.meta code {
-  color: var(--dim);
+.ghead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-size: 11px;
 }
-.meta em {
-  color: var(--accent-bright);
-  font-style: normal;
+.gno {
+  color: var(--dim);
+  font-weight: 700;
+}
+.thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+.cell {
+  position: relative;
+  width: 66px;
+  height: 66px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  flex: none;
+  transition:
+    transform var(--speed) ease,
+    box-shadow var(--speed) ease;
+}
+.cell:hover {
+  transform: scale(1.06);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.5);
+}
+.cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.cell.keep {
+  box-shadow:
+    inset 0 0 0 3px var(--sel),
+    inset 0 0 0 4.5px rgba(255, 255, 255, 0.9);
+}
+.badge {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--sel);
+  color: #2a1a00;
+  font-size: 11px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}
+.badge.sim {
+  left: auto;
+  right: 2px;
+  width: auto;
+  height: auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #e6edf6;
   font-weight: 600;
+  font-size: 10px;
 }
-.reason {
-  color: var(--dim);
-  font-size: 11px;
+.more {
+  align-self: center;
 }
-.dist {
-  color: var(--dim);
-}
-.foot {
+.gfoot {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 16px;
-  border-top: 1px solid var(--line);
+  gap: 6px;
+  margin-top: auto;
+}
+.reason {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gfoot :deep(.btn) {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+.empty,
+.foot {
+  text-align: center;
+  color: var(--dim);
+  font-size: 12px;
+  margin: 18px 0 26px;
+}
+.empty {
+  margin-top: 60px;
+  font-size: 13px;
 }
 </style>

@@ -222,7 +222,7 @@ pub fn count_files_cmd(
 ///
 /// **必须离开界面主线程**：同步命令会在 WebView 的主线程上执行，一张大图解码要几百毫秒，
 /// 一屏几十张就是十几秒的界面假死（用户反馈的「拖滑块卡顿」很大一部分来自这里）。
-/// 同时用 `with_thumb_slot` 限制并发，避免几十张大图同时解码把内存顶到几个 GB。
+/// 并发限制在前端排队（见 src/api.ts），后端不再自建信号量。
 #[tauri::command]
 pub async fn get_thumb(
     app: AppHandle,
@@ -245,15 +245,13 @@ pub async fn get_thumb(
     };
 
     tauri::async_runtime::spawn_blocking(move || {
-        let p = crate::thumb::with_thumb_slot(|| {
-            crate::thumb::make_thumb(
-                std::path::Path::new(&rec.path),
-                &cache,
-                rec.id,
-                rec.mtime,
-                max_edge,
-            )
-        })
+        let p = crate::thumb::make_thumb(
+            std::path::Path::new(&rec.path),
+            &cache,
+            rec.id,
+            rec.mtime,
+            max_edge,
+        )
         .map_err(|e| e.to_string())?;
         // 用 Response 直接回二进制：几千张缩略图若走 JSON 数组会白烧 CPU 和内存
         let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
@@ -285,15 +283,13 @@ pub async fn get_preview(
     };
 
     tauri::async_runtime::spawn_blocking(move || {
-        let p = crate::thumb::with_thumb_slot(|| {
-            crate::thumb::make_thumb(
-                std::path::Path::new(&rec.path),
-                &cache,
-                rec.id,
-                rec.mtime,
-                1600,
-            )
-        })
+        let p = crate::thumb::make_thumb(
+            std::path::Path::new(&rec.path),
+            &cache,
+            rec.id,
+            rec.mtime,
+            1600,
+        )
         .map_err(|e| e.to_string())?;
         let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
         Ok(tauri::ipc::Response::new(bytes))

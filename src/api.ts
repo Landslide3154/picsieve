@@ -48,10 +48,58 @@ export const formatStats = () => invoke<FormatStat[]>('format_stats_cmd')
 export const showMainWindow = () => invoke<void>('show_main_window')
 
 // ---------- 缩略图与预览 ----------
+/**
+ * 缩略图并发闸门：最多同时 4 张。
+ *
+ * 尖峰来自「一屏几十张格子同时要图」和「重复组一屏几百张」——一张 4000×6000 的图
+ * 解码后是几十 MB，几十张同时解码会把内存顶到几个 GB。
+ * 放在这里排队而不是后端：后端每张排队的请求都占一条阻塞线程，实测会把线程池拉爆并卡死。
+ */
+const MAX_PARALLEL_THUMBS = 6
+let thumbRunning = 0
+
+interface ThumbJob {
+  start: () => void
+  skip: () => void
+}
+const thumbQueue: ThumbJob[] = []
+
+function pumpThumbs() {
+  while (thumbRunning < MAX_PARALLEL_THUMBS && thumbQueue.length) {
+    thumbQueue.shift()!.start()
+  }
+}
+
 /** 取缩略图并转成可直接放进 <img src> 的 Blob URL。调用方负责在不用时 revoke。 */
-export async function fetchThumbUrl(fileId: number): Promise<string> {
-  const raw = await invoke<ArrayBuffer | number[]>('get_thumb', { fileId })
-  return toBlobUrl(raw)
+export function fetchThumbUrl(fileId: number, cancelled?: () => boolean): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const skip = () => resolve('')
+    const start = () => {
+      if (cancelled?.()) return skip()
+      thumbRunning++
+      void (async () => {
+        try {
+          const raw = await invoke<ArrayBuffer | number[]>('get_thumb', { fileId })
+          // 请求期间格子可能已经滚出画面了，那就别再建 Blob 占用内存
+          if (cancelled?.()) return skip()
+          resolve(toBlobUrl(raw))
+        } catch (e) {
+          reject(e)
+        } finally {
+          thumbRunning--
+          pumpThumbs()
+        }
+      })()
+    }
+    thumbQueue.push({ start, skip })
+    // 快速滚动时队列会被灌满（每个划过的格子都会来要一张）：
+    // 超出上限的老请求直接作废，反正它们早就滚出屏幕了。
+    if (thumbQueue.length > 400) {
+      const stale = thumbQueue.splice(0, thumbQueue.length - 400)
+      for (const j of stale) j.skip()
+    }
+    pumpThumbs()
+  })
 }
 
 /** 空格预览用的大图（长边 1600，单独一份缓存） */
