@@ -44,13 +44,14 @@ const rootsTip = computed(() =>
       </template>
       <template v-else-if="isGroups">
         <span class="num">
-          <b>{{ fmtCount(groups.checkedCount) }}</b> 张标了「删」 ·
-          可省 <b>{{ fmtBytes(groups.checkedBytes) }}</b>
+          已选 <b>{{ fmtCount(groups.checkedCount) }}</b> 张 ·
+          <b>{{ fmtBytes(groups.checkedBytes) }}</b>
         </span>
+        <button class="btn ghost sm" @click="groups.checkAll()">全选已加载</button>
         <button class="btn ghost sm" :disabled="!groups.checkedCount" @click="groups.clearChecked()">
-          全部取消标记
+          取消选择
         </button>
-        <button class="btn ghost sm" @click="groups.applyDefaults()">按建议标</button>
+        <button class="btn ghost sm" @click="groups.applyDefaults()">按建议重选</button>
       </template>
     </div>
 
@@ -71,13 +72,13 @@ const rootsTip = computed(() =>
         </button>
       </template>
       <template v-else-if="isGroups">
-        <span class="dim tiny hint">只有带红色「删」的会被搬走；点图就是开关这个标记</span>
+        <span class="dim tiny hint">点和图库一样：单击选中/取消 · 双击打开 · 默认已选好要删的那几张</span>
         <button
           class="btn danger"
           :disabled="!groups.checkedCount"
           @click="$emit('move-groups')"
         >
-          把标了「删」的 {{ fmtCount(groups.checkedCount) }} 张移入隔离区
+          移到隔离区
         </button>
       </template>
     </div>

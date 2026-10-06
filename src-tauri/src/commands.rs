@@ -380,6 +380,19 @@ pub async fn restore_batch(
     .map_err(|e| e.to_string())?
 }
 
+/// 一键清空整个隔离区（所有批次）。永久删除，前端必须先二次确认。
+#[tauri::command]
+pub async fn purge_all_quarantine(
+    app: AppHandle,
+) -> std::result::Result<crate::quarantine::PurgeReport, String> {
+    let db = app.state::<AppState>().db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::quarantine::purge_all(&db).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn purge_batch(
     app: AppHandle,

@@ -101,6 +101,7 @@ pub fn run() {
             commands::move_to_quarantine,
             commands::restore_batch,
             commands::purge_batch,
+            commands::purge_all_quarantine,
             commands::list_quarantine_batches,
             commands::thumb_cache_stats,
             commands::trim_thumb_cache,

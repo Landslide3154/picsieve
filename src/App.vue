@@ -121,7 +121,7 @@ function afterScan() {
     <DupGroupView
       v-else-if="tab === 'groups'"
       :refresh-key="dataVersion"
-      @move-to-quarantine="move"
+      :gray-threshold="settings?.grayThreshold ?? 8"
     />
     <template v-else>
       <div class="body">

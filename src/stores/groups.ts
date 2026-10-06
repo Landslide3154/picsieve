@@ -95,6 +95,7 @@ export const useGroups = defineStore('groups', () => {
     checked.value = new Set()
   }
 
+  /** 全选已加载的（对齐图库里的「全选已加载」） */
   function checkAll() {
     const next = new Set(checked.value)
     for (const t of tiles.value) for (const f of allFiles(t)) next.add(f.id)

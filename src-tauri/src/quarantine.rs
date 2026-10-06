@@ -148,6 +148,20 @@ pub fn purge(db: &Db, batch: &str) -> Result<PurgeReport> {
     Ok(report)
 }
 
+/// 一次清空整个隔离区（所有批次）。
+///
+/// 和单批清空一样是**永久删除**，调用方必须先做二次确认并写明数量与释放空间。
+pub fn purge_all(db: &Db) -> Result<PurgeReport> {
+    let batches = db.quarantine_batches()?;
+    let mut report = PurgeReport::default();
+    for b in batches {
+        let r = purge(db, &b.batch_id)?;
+        report.purged += r.purged;
+        report.bytes += r.bytes;
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +185,37 @@ mod tests {
             })
             .unwrap();
         (src, q, db, id)
+    }
+
+    #[test]
+    fn purge_all_clears_every_batch() {
+        let (src, q, db, id) = fixture();
+        let p2 = src.path().join("victim2.jpg");
+        std::fs::write(&p2, b"pretend jpeg bytes 2").unwrap();
+        let id2 = db
+            .upsert_file(&FileRecord {
+                path: p2.to_string_lossy().to_string(),
+                root: src.path().to_string_lossy().to_string(),
+                size: 20,
+                mtime: 1,
+                ..Default::default()
+            })
+            .unwrap();
+
+        move_in(&db, &[id], q.path(), "batch-a").unwrap();
+        move_in(&db, &[id2], q.path(), "batch-b").unwrap();
+        assert_eq!(db.quarantine_batches().unwrap().len(), 2);
+
+        let report = purge_all(&db).unwrap();
+        assert_eq!(report.purged, 2, "两个批次都要清掉");
+        assert!(report.bytes > 0);
+        assert!(
+            db.quarantine_batches().unwrap().is_empty(),
+            "清完后不该还有批次"
+        );
+        // 磁盘上的隔离文件也要真的没了
+        let left = std::fs::read_dir(q.path()).unwrap().count();
+        assert_eq!(left, 0, "隔离区目录应当空了");
     }
 
     #[test]

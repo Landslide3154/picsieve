@@ -130,6 +130,8 @@ export const moveToQuarantine = (fileIds: number[]) =>
   invoke<MoveReport>('move_to_quarantine', { fileIds })
 export const restoreBatch = (batch: string) => invoke<MoveReport>('restore_batch', { batch })
 export const purgeBatch = (batch: string) => invoke<PurgeReport>('purge_batch', { batch })
+/** 一键清空整个隔离区（所有批次），永久删除 */
+export const purgeAllQuarantine = () => invoke<PurgeReport>('purge_all_quarantine')
 export const listQuarantineBatches = () => invoke<QuarantineBatch[]>('list_quarantine_batches')
 export const quarantineBatchFiles = (batch: string) =>
   invoke<FileRecord[]>('quarantine_batch_files', { batch })

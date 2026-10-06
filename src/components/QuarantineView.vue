@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import {
   fetchThumbUrl,
   listQuarantineBatches,
+  purgeAllQuarantine,
   purgeBatch,
   quarantineBatchFiles,
   restoreBatch,
@@ -19,6 +20,8 @@ const expanded = ref<string | null>(null)
 const batchFiles = ref<Map<string, FileRecord[]>>(new Map())
 const thumbs = ref<Map<number, string>>(new Map())
 const confirming = ref<string | null>(null)
+/** 一键清空整个隔离区的二次确认 */
+const confirmingAll = ref(false)
 
 const totalBytes = () => batches.value.reduce((s, b) => s + b.bytes, 0)
 const totalCount = () => batches.value.reduce((s, b) => s + b.count, 0)
@@ -92,6 +95,22 @@ async function doPurge(b: QuarantineBatch) {
   }
 }
 
+/** 一键清空所有批次（同样要点两次，确认框写明数量与释放空间） */
+async function doPurgeAll() {
+  error.value = ''
+  try {
+    const r = await purgeAllQuarantine()
+    msg.value = `已永久删除 ${r.purged} 张，释放 ${fmt(r.bytes)}`
+    confirmingAll.value = false
+    expanded.value = null
+    batchFiles.value = new Map()
+    await load()
+    emit('changed')
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+
 /** 清空前把文件名摆出来：确认框里只写「N 个文件」是不够的 */
 function namesPreview(b: QuarantineBatch): string {
   const files = batchFiles.value.get(b.batchId) ?? []
@@ -113,7 +132,25 @@ onMounted(load)
       </span>
       <span class="grow" />
       <button class="btn ghost sm" @click="load">刷新</button>
+      <template v-if="batches.length">
+        <template v-if="!confirmingAll">
+          <button class="btn danger sm" @click="confirmingAll = true">
+            一键清空全部（{{ totalCount().toLocaleString('zh-CN') }} 张）
+          </button>
+        </template>
+      </template>
     </header>
+
+    <div v-if="confirmingAll" class="confirm-all">
+      <p class="warn">
+        将永久删除隔离区里<b>全部</b> {{ totalCount().toLocaleString('zh-CN') }} 个文件，
+        释放约 {{ fmt(totalBytes()) }}，共 {{ batches.length }} 批。此操作不可撤销，文件不会进回收站。
+      </p>
+      <div class="confirm-ops">
+        <button class="btn danger" @click="doPurgeAll">确定永久删除全部</button>
+        <button class="btn ghost" @click="confirmingAll = false">取消</button>
+      </div>
+    </div>
     <p class="hint">
       这里的文件只是被搬过来了（同盘搬动是瞬时的，不占额外空间），随时可以搬回原位。
       只有点了「彻底清空」才真的删除，而且要点两次。
@@ -235,6 +272,20 @@ th {
 .confirm-row td {
   background: var(--danger-soft);
   padding: 8px 10px;
+}
+.confirm-all {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--danger-soft);
+}
+.confirm-all p {
+  margin: 0 0 8px;
+}
+.confirm-ops {
+  display: flex;
+  gap: 8px;
 }
 .warn {
   color: #f0a08c;
