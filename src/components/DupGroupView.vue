@@ -183,9 +183,9 @@ watch(
     </header>
 
     <p class="tip pad">
-      <b>点图上的勾</b>：打勾＝要删掉，取消勾＝留下。
-      两张相同的默认勾 1 张、三张的默认勾 2 张（也就是默认每组留下建议的那张）。
-      勾好以后按<b>最下面那个按钮</b>一次把勾上的全搬进隔离区。
+      <b>点图就是把「删」这个标记打开/关上</b>：带红色「删」的会被搬进隔离区，
+      没标记的自动留下。两张相同的默认标 1 张、三张的默认标 2 张（默认每组留下建议的那张）。
+      勾好以后按<b>最下面那个按钮</b>一次把标了「删」的全搬走。
       <span class="dim">
         PgUp/PgDn 翻页 · Home 顶部 · End 一路到底（滚滑轮或点鼠标即打断）
       </span>
@@ -221,15 +221,12 @@ watch(
               :key="c.file.id"
               class="pic"
               :class="{ del: store.isChecked(c.file.id) }"
-              :title="`${c.file.path}\n点一下：打勾=删掉 / 取消=留下`"
+              :title="`${c.file.path}\n点一下：标上「删」（会被搬走）/ 再点一下取消`"
               @click="store.toggle(c.file.id)"
             >
               <img :src="thumbs.get(c.file.id) ?? ''" alt="" @dblclick="openExternal(c.file.path)" />
               <span v-if="!thumbs.get(c.file.id)" class="ph dim tiny">生成中…</span>
-              <span class="mark">
-                <span v-if="store.isChecked(c.file.id)" class="del-tag">删</span>
-                <span v-else class="keep-tag">留</span>
-              </span>
+              <span v-if="store.isChecked(c.file.id)" class="mark"><span class="del-tag">删</span></span>
               <span v-if="similarity(c.distance)" class="sim num">{{ similarity(c.distance) }}</span>
               <span class="sz num">{{ fmt(c.file.size) }}</span>
             </button>
@@ -347,7 +344,11 @@ watch(
   display: block;
   transition: filter var(--speed) ease;
 }
-/* 打勾 = 要删：红框 + 提亮，一眼看清哪些会被删 */
+/* 只有「要删的」才有标记：红框 + 红「删」+ 提亮。
+   留下的不画任何标记（默认就是留，不需要额外说明）。 */
+.pic {
+  box-shadow: inset 0 0 0 1px rgba(160, 170, 185, 0.22);
+}
 .pic.del {
   box-shadow:
     inset 0 0 0 3px rgba(255, 92, 92, 0.95),
@@ -356,29 +357,19 @@ watch(
 .pic.del img {
   filter: brightness(1.18) saturate(1.05);
 }
-.pic:not(.del) {
-  box-shadow: inset 0 0 0 3px rgba(255, 164, 36, 0.9);
-}
 .mark {
   position: absolute;
   left: 6px;
   top: 6px;
 }
-.del-tag,
-.keep-tag {
+.del-tag {
   display: inline-block;
   padding: 0 7px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
-}
-.del-tag {
   background: #ff5c5c;
   color: #2a0000;
-}
-.keep-tag {
-  background: var(--sel);
-  color: #2a1a00;
 }
 .sim {
   position: absolute;

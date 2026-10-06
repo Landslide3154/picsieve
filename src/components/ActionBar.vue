@@ -44,13 +44,13 @@ const rootsTip = computed(() =>
       </template>
       <template v-else-if="isGroups">
         <span class="num">
-          勾选 <b>{{ fmtCount(groups.checkedCount) }}</b> 张要删 ·
+          <b>{{ fmtCount(groups.checkedCount) }}</b> 张标了「删」 ·
           可省 <b>{{ fmtBytes(groups.checkedBytes) }}</b>
         </span>
         <button class="btn ghost sm" :disabled="!groups.checkedCount" @click="groups.clearChecked()">
-          全不勾（都留）
+          全部取消标记
         </button>
-        <button class="btn ghost sm" @click="groups.applyDefaults()">按建议勾选</button>
+        <button class="btn ghost sm" @click="groups.applyDefaults()">按建议标</button>
       </template>
     </div>
 
@@ -71,13 +71,13 @@ const rootsTip = computed(() =>
         </button>
       </template>
       <template v-else-if="isGroups">
-        <span class="dim tiny hint">每组的默认勾选＝建议保留以外的那几张；不认同就点图改勾</span>
+        <span class="dim tiny hint">只有带红色「删」的会被搬走；点图就是开关这个标记</span>
         <button
           class="btn danger"
           :disabled="!groups.checkedCount"
           @click="$emit('move-groups')"
         >
-          把勾选的 {{ fmtCount(groups.checkedCount) }} 张移入隔离区
+          把标了「删」的 {{ fmtCount(groups.checkedCount) }} 张移入隔离区
         </button>
       </template>
     </div>
