@@ -34,3 +34,8 @@ src-tauri/gen/
 # 端到端冒烟用的受控测试图片与中间产物
 .e2e/
 
+
+# 环境变量与凭据（绝不入库）
+.env
+.env.*
+!.env.example
