@@ -46,6 +46,7 @@ Windows 桌面工具：清理本地大批量 Pixiv 图片（大量文件平铺�
 
 - 版本号写在三处（`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`），必须同时改、保持一致；本文件不写当前值。
 - 发版：`pnpm tauri build` → NSIS 安装包，产物在 `src-tauri\target\release\bundle\nsis\PicSieve_<版本>_x64-setup.exe`（`bundle.targets = ["nsis"]`）。
+- **推送/发 Release 必须等用户明确要求**（全局 §2，用户 2026-10-13 明确）：构建与真机自测照做，本地 `git commit` 照常，然后停下汇报「已提交、未推送」。
 - 会漂移的当前值（当前版本号、提交数、进度）→ 记忆空间「图筛 PicSieve」，本文件不写。
 
 ## 6. 已知坑
