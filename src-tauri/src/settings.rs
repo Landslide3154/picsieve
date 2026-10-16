@@ -14,6 +14,24 @@ pub struct Settings {
     pub roots: Vec<String>,
 }
 
+/// 隔离区默认位置：优先 `PICSIEVE_QUARANTINE_DIR` 环境变量，
+/// 否则放在用户主目录下的 `PicSieve\quarantine`——不绑定任何本机固定盘符路径。
+fn default_quarantine_dir() -> String {
+    if let Ok(v) = std::env::var("PICSIEVE_QUARANTINE_DIR") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+    Path::new(&home)
+        .join("PicSieve")
+        .join("quarantine")
+        .to_string_lossy()
+        .into_owned()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let n = std::thread::available_parallelism()
@@ -25,7 +43,7 @@ impl Default for Settings {
             gray_threshold: 8.0,
             thumb_max_edge: 320,
             thumb_cache_limit_mb: 3072,
-            quarantine_dir: r"D:\色图\_待确认删除".to_string(),
+            quarantine_dir: default_quarantine_dir(),
             roots: Vec::new(),
         }
     }

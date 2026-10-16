@@ -1,13 +1,13 @@
 # 图筛 PicSieve — 开发约定
 
-> 跨项目通用规则见全局 `C:\Users\godis\.dsh\AGENTS.md`，本文件不重复，只写这个项目独有的东西。
+> 跨项目通用规则见全局 `~/.dsh/AGENTS.md`，本文件不重复，只写这个项目独有的东西。
+> 本机专属的路径、数据规模、版本与实测数字在 `AGENTS.local.md`（不提交）；长篇取证在 `docs/`。
 
 ## 1. 这个项目是什么
 
-Windows 桌面工具：清理本地大批量 Pixiv 图片（大量文件平铺在少数几个大目录里，实际规模以目录为准）——找重复、按条件筛、安全地删。
-**Tauri 2 (Rust) + Vue 3 + TypeScript + SQLite**。仓库 `Landslide3154/picsieve`（公开）；本地 `D:\code\PicSieve`。
-
-关键位置：`src-tauri/src/scanner.rs` → `fingerprint.rs`/`phash.rs` → `grouper.rs` 是「扫描 → 算指纹 → 分组」主链；`quarantine.rs` 是隔离区；`db.rs` + `query.rs` 是 SQLite 与列表查询；`src/` 是 Vue 界面；`tools/cdp.mjs` 是 e2e 共用的 CDP 封装。
+Windows 桌面工具：清理本地大批量 Pixiv 图片（大量文件平铺在少数几个大目录里，规模以目录为准）——找重复、按条件筛、安全地删。
+**Tauri 2 (Rust) + Vue 3 + TypeScript + SQLite**。仓库 `Landslide3154/picsieve`（公开）。
+主链：`scanner.rs` → `fingerprint.rs`/`phash.rs` → `grouper.rs`（扫描 → 算指纹 → 分组）；删除一律经 `quarantine.rs` 隔离区。
 
 ## 2. 常用命令（可直接复制执行）
 
@@ -21,43 +21,40 @@ Windows 桌面工具：清理本地大批量 Pixiv 图片（大量文件平铺�
 | 造测试图 | `python tools\make_test_images.py [目标目录]`（默认 `.e2e/images`） |
 | 生成图标 | `python tools\make_icon.py` |
 
-**端到端验证（本项目的看家手段，改了界面/交互必跑）**：`tools/e2e-smoke.mjs`、`tools/e2e-quarantine.mjs` 经 **WebView2 远程调试口**真实点击界面并核对磁盘 sha256。启动应用时带 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`；`.e2e/` 下放检查脚本与截图。
+**端到端验证（改了界面/交互必跑；类型检查测不出真实点击路径）**：`tools/e2e-smoke.mjs` 驱真实 DOM 与库，`tools/e2e-quarantine.mjs` 逐文件核对磁盘 sha256；两者都经 **WebView2 远程调试口**（启动带 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`）。CDP 封装在 `tools/cdp.mjs`，脚本与截图放 `.e2e/`；这套手法其它 Tauri 项目可复用。
 
-**凡会真动磁盘的用例（移入隔离区等）必须跑沙箱**：启动时带 `PICSIEVE_DATA_DIR=<临时目录>` 即可把数据库/设置指到别处；参考 `.e2e/reset-sandbox2.ps1` + `.e2e/verify-round7.mjs`。
+**凡会真动磁盘的用例（移入隔离区等）必须跑沙箱**：启动时带 `PICSIEVE_DATA_DIR=<临时目录>`，把数据库与设置指到别处。
 
 ## 3. 硬约束（必须 / 禁止）
 
-- 必须：**所有删除一律先移入隔离区** `D:\色图\_待确认删除`，随时可搬回；「彻底清空」必须二次确认，并在确认框里写明将删除的文件数与释放空间。
+- 必须：**所有删除一律先移入隔离区**；「彻底清空」必须二次确认，确认框里写明将删除的文件数与释放空间。
 - 必须：**扫描与算指纹阶段全程只读**，不得改动源文件。
 - 必须：**相似组绝不自动删除**，只给建议（建议保留：作品 ID 优先 → 路径更短 → 修改时间更早）。
-- 必须：版本号在 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` **三处保持一致**（当前值以文件为准）。
-- 必须：commit message 用 Conventional Commits（中英混合均可）。
-- 禁止：拿用户的真实图库（`D:\色图` 下的 PIXIV daily / daily r18）做破坏性实验，规模以实际目录为准。
-- 禁止：用 `LOCALAPPDATA` 环境变量做测试隔离——对 Tauri 无效（原因见第 4 节）。
+- 必须：版本号在 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` **三处保持一致**。
+- 禁止：拿用户的真实图库做破坏性实验；测试隔离只能用 `PICSIEVE_DATA_DIR`（`LOCALAPPDATA` 无效，见 §6）。
 
 ## 4. 架构边界与因果（从代码看不出为什么）
 
-- **读图片头要「一次性读进 64KB 再在内存里解析」**：直接让 image crate 打开文件走解码器慢 13–67 倍（实测 229.8s → 4.8–8.5s）。
-- **大规模写库必须攒批事务**：逐条提交时每条都要重解析 SQL。
-- **不要给 `(status, short_side)` 之类加复合索引**：会让 `ORDER BY size DESC LIMIT n` 失去有序扫描，列表查询从 3ms 劣化成 1.7s。
-- **测试隔离只能用 `PICSIEVE_DATA_DIR`**：`LOCALAPPDATA` 对 Tauri 无效，它走系统「已知文件夹」API，改了会写进用户的真实库。
+- **只读扫描 + 只进隔离区**：源图库不可再生，任何不可回退的删除都不可接受。
+- **读图片头必须「一次性读进 64KB 再在内存里解析」**：判断尺寸/格式只需文件头，而 `image` crate 打开文件走完整解码器，慢一个数量级以上。凡「只想知道图片尺寸」的批量扫描同理。
+- **大规模写库必须攒批事务**：逐条提交时每条都要重解析 SQL 并单独提交一次，吞吐差若干倍。
+- **不要给 `(status, short_side)` 之类加复合索引**：它会让 `ORDER BY size DESC LIMIT n` 失去有序扫描（改走该索引再排序），列表首屏从毫秒级劣化成秒级；列表查询的索引列顺序必须与 `ORDER BY` 对齐。
 
 ## 5. 版本与发布
 
-- 版本号写在三处（`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`），必须同时改、保持一致；本文件不写当前值。
-- 发版：`pnpm tauri build` → NSIS 安装包，产物在 `src-tauri\target\release\bundle\nsis\PicSieve_<版本>_x64-setup.exe`（`bundle.targets = ["nsis"]`）。
-- **推送/发 Release 必须等用户明确要求**（全局 §2，用户 2026-10-13 明确）：构建与真机自测照做，本地 `git commit` 照常，然后停下汇报「已提交、未推送」。
-- 会漂移的当前值（当前版本号、提交数、进度）→ 记忆空间「图筛 PicSieve」，本文件不写。
+- 版本号三处同改（见 §3）。
+- 发版：`pnpm tauri build` → NSIS 安装包，产物在 `src-tauri\target\release\bundle\nsis\`（`bundle.targets = ["nsis"]`）。
+- **发布与推送等用户明确口令**（全局 §3）；本地 `git commit` 照常，做完汇报「已提交、未推送」。
 
 ## 6. 已知坑
 
-- 界面/交互改动只跑 `pnpm build` 就收工 → 类型检查测不出真实点击路径 → 必跑第 2 节的 e2e（并带 `--remote-debugging-port=9222`）。
-- 破坏性用例（移入隔离区、清空）直接对着真实库跑 → 无法回退 → 必须先起 `PICSIEVE_DATA_DIR` 沙箱。
-- 只改 `package.json` 的版本号 → 三处不一致会让安装包/关于页版本对不上 → 三处同改。
+- 用 `LOCALAPPDATA` 改数据目录 → Tauri 走系统「已知文件夹」API，不读该变量，会写进用户真实库 → 用应用自己的开关 `PICSIEVE_DATA_DIR`（`src-tauri/src/lib.rs`）。
+- 用 `Process.MainWindowHandle` 量窗口 → 进程内还有辅助/隐藏窗，取到的可能不是主窗 → 枚举全部顶层窗口**按面积挑最大**的。
+- 把限流做成 Rust 侧信号量 → 排队中的 `spawn_blocking` 每条都占一条阻塞线程，前端一次要几十张时阻塞线程池占满、CPU 归零、命令全卡死 → 限流放前端排队（`src/api.ts`）。
+- 缩略图请求不做取消 → 虚拟列表滚过十万张会堆积十几万个过期请求，队列堵死 → 必须可取消（格子 `onUnmounted` 后跳过，含排队中的）。
+- 十万级列表用深响应式 `ref` → 每条记录包成 Proxy，内存与访问开销翻数倍 → `shallowRef` + 整表替换，统计增量维护（否则每批整表重算退化成 O(n²)）。
 
 ## 7. 指针
 
-- 全局规则：`C:\Users\godis\.dsh\AGENTS.md`（git 推送见 §2、shell 与编码见 §3、MCP 见 §5、图标见 §7）——本节不复述。
-- 记忆空间：图筛 PicSieve（当前版本、进度与实测快照）。
-- 设计依据：`docs/superpowers/specs/`、`docs/superpowers/plans/`（含 UI 改版规格）——**改行为前先读对应规格，改完同步更新**；`README.md` 面向普通用户，写「能做什么 / 怎么用」。
-- 图标参考图：`docs/reference/icon-reference.png`（视觉规范见全局 §7）。
+- 实测取证：`docs/性能实测.md`（性能/并发/内存/线程数与数据规模的完整数字）。
+- 设计依据：`docs/superpowers/specs/`、`docs/superpowers/plans/`——**改行为前先读对应规格，改完同步更新**；`README.md` 面向普通用户。

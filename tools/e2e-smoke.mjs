@@ -11,7 +11,11 @@
 import { connect } from './cdp.mjs'
 
 const IMAGES = process.argv[2]
-const QUARANTINE = process.argv[3] || 'D:\\code\\PicSieve\\.e2e\\quarantine'
+// 隔离区可覆盖：第 2 个参数 > PICSIEVE_QUARANTINE_DIR 环境变量 > 仓库内 .e2e/quarantine（相对路径，不绑盘符）
+const QUARANTINE =
+  process.argv[3] ||
+  process.env.PICSIEVE_QUARANTINE_DIR ||
+  new URL('../.e2e/quarantine', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
 
 const { evaluate, pageErrors, close } = await connect()
 
