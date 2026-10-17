@@ -44,7 +44,7 @@ Windows 桌面工具：清理本地大批量 Pixiv 图片（大量文件平铺�
 
 - 版本号三处同改（见 §3）。
 - 发版：`pnpm tauri build` → NSIS 安装包，产物在 `src-tauri\target\release\bundle\nsis\`（`bundle.targets = ["nsis"]`）。
-- **发布与推送等用户明确口令**（见全局 `AGENTS.md` 的「Git 与 GitHub」节）；本地 `git commit` 照常，做完汇报「已提交、未推送」。
+- **发版产物就绪后就停下**：推送 / tag / 建 Release 等用户发话（口径见全局 `AGENTS.md` 的「Git 与 GitHub」节），做完汇报「已提交、未推送」。
 
 ## 6. 已知坑
 
