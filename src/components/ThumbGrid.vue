@@ -6,7 +6,13 @@ import PreviewOverlay from './PreviewOverlay.vue'
 import ThumbCell from './ThumbCell.vue'
 import ThumbTip from './ThumbTip.vue'
 import { useLibrary } from '../stores/library'
+import { loadPref, savePref } from '../prefs'
 import type { FileRecord } from '../types'
+
+function clampSize(n: unknown): number {
+  const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : 1
+  return Math.max(0, Math.min(2, v))
+}
 
 const props = withDefaults(defineProps<{ grayThreshold?: number }>(), { grayThreshold: 8 })
 const emit = defineEmits<{
@@ -18,15 +24,24 @@ const store = useLibrary()
 const scroller = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const viewportH = ref(800)
-const CELL_W = 152
-const CELL_H = 205
 
+// 缩略图三档：只定「目标格子宽度」，实际宽度按列数摊平后回算。
+// 格子是 1:1.32 的固定比例，所以行高必须跟着实际宽度走；
+// 写死行高的话三档下会累积误差，滚动条位置和 End 的落点都会偏。
+const SIZES = [124, 152, 196]
+const SIZE_NAMES = ['小', '中', '大']
+const GAP = 12
+const RATIO = 1.32
+const sizeIdx = ref(clampSize(loadPref<number>('thumbSize', 1)))
 const columns = ref(6)
+/** 摊平后每格的实际宽度（CSS px） */
+const cellW = ref(152)
+const rowPitch = computed(() => cellW.value * RATIO + GAP)
 const rowCount = computed(() => Math.ceil(store.files.length / columns.value))
-const totalH = computed(() => rowCount.value * CELL_H)
-const startRow = computed(() => Math.max(0, Math.floor(scrollTop.value / CELL_H) - 2))
+const totalH = computed(() => Math.max(0, rowCount.value * rowPitch.value - GAP))
+const startRow = computed(() => Math.max(0, Math.floor(scrollTop.value / rowPitch.value) - 2))
 const endRow = computed(() =>
-  Math.min(rowCount.value, Math.ceil((scrollTop.value + viewportH.value) / CELL_H) + 2),
+  Math.min(rowCount.value, Math.ceil((scrollTop.value + viewportH.value) / rowPitch.value) + 2),
 )
 const visible = computed(() =>
   store.files.slice(startRow.value * columns.value, endRow.value * columns.value),
@@ -73,9 +88,18 @@ const previewFile = computed(() =>
   previewIndex.value >= 0 ? (store.files[previewIndex.value] ?? null) : null,
 )
 
-// 结果被整表换掉（改筛选/排序/搜索）时回到顶部，并清掉悬停残留
+// 预览开着时删掉了一张：列表变短就关浮层，否则同一个位置会自动换成下一张
 watch(
-  () => store.files[0]?.id,
+  () => store.files.length,
+  (n) => {
+    if (previewIndex.value >= n) previewIndex.value = -1
+  },
+)
+
+// 只有「筛选/排序变了」才回到顶部并关掉预览；
+// 搬走文件导致的列表变化不算——那时预览要原地换成下一张，不能突然关掉
+watch(
+  () => store.filter,
   () => {
     interruptAuto()
     tip.value = null
@@ -97,7 +121,7 @@ function onScroll() {
   viewportH.value = el.clientHeight
   tip.value = null
   // 快到底了就提前取下一批，滚动时不会看到空白
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - CELL_H * 2) {
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - rowPitch.value * 2) {
     void store.loadMore()
   }
 }
@@ -105,7 +129,12 @@ function onScroll() {
 function measure() {
   const el = scroller.value
   if (!el) return
-  columns.value = Math.max(1, Math.floor((el.clientWidth - 20) / CELL_W))
+  // 可用宽度 = 容器宽 - 左右各 10px 内边距；列数按「目标格子宽 + 间距」排，
+  // 再用实际宽度回算行高——这样三档下滚动条都不会骗人
+  const avail = Math.max(1, el.clientWidth - 20)
+  const target = SIZES[sizeIdx.value]
+  columns.value = Math.max(1, Math.floor((avail + GAP) / (target + GAP)))
+  cellW.value = (avail - GAP * (columns.value - 1)) / columns.value
   viewportH.value = el.clientHeight
 }
 
@@ -113,11 +142,41 @@ function onResize() {
   measure()
 }
 
+/** Ctrl+滚轮换档：必须非 passive 才能 preventDefault，否则 WebView 会顺手把整页缩放掉 */
+function setSize(next: number) {
+  const idx = clampSize(next)
+  if (idx === sizeIdx.value) return
+  const el = scroller.value
+  // 把「当前第一屏的图」钉在原地，换档后不会突然迷路
+  const firstIndex = el ? Math.floor(el.scrollTop / rowPitch.value) * columns.value : 0
+  sizeIdx.value = idx
+  savePref('thumbSize', idx)
+  measure()
+  if (el) {
+    const row = Math.floor(firstIndex / columns.value)
+    el.scrollTop = row * rowPitch.value
+    scrollTop.value = el.scrollTop
+  }
+  emit('notice', `缩略图：${SIZE_NAMES[idx]}`)
+}
+
+function onWheel(e: WheelEvent) {
+  if (!e.ctrlKey) return
+  e.preventDefault()
+  setSize(sizeIdx.value + (e.deltaY > 0 ? 1 : -1))
+}
+
+let wheelTarget: HTMLElement | null = null
 onMounted(() => {
   measure()
   window.addEventListener('resize', onResize)
+  wheelTarget = scroller.value
+  wheelTarget?.addEventListener('wheel', onWheel, { passive: false })
 })
-onUnmounted(() => window.removeEventListener('resize', onResize))
+onUnmounted(() => {
+  window.removeEventListener('resize', onResize)
+  wheelTarget?.removeEventListener('wheel', onWheel)
+})
 
 // ---------- 交互 ----------
 function onSelect(id: number, mods: { shift: boolean; ctrl: boolean }) {
@@ -180,10 +239,10 @@ async function focusTo(index: number) {
   if (!el) return
   await nextTick()
   const row = Math.floor(next / columns.value)
-  const top = row * CELL_H
+  const top = row * rowPitch.value
   if (top < el.scrollTop) el.scrollTop = top
-  else if (top + CELL_H > el.scrollTop + el.clientHeight) {
-    el.scrollTop = top + CELL_H - el.clientHeight
+  else if (top + rowPitch.value > el.scrollTop + el.clientHeight) {
+    el.scrollTop = top + rowPitch.value - el.clientHeight
   }
   scrollTop.value = el.scrollTop
 }
@@ -196,16 +255,16 @@ function page(direction: 1 | -1) {
   interruptAuto()
   const el = scroller.value
   if (!el) return
-  const step = Math.max(CELL_H, el.clientHeight - CELL_H)
+  const step = Math.max(rowPitch.value, el.clientHeight - rowPitch.value)
   const max = Math.max(0, el.scrollHeight - el.clientHeight)
   el.scrollTop = Math.max(0, Math.min(max, el.scrollTop + direction * step))
   scrollTop.value = el.scrollTop
   // 焦点格跟着翻页走，键盘操作不丢
   if (store.files.length) {
-    const firstRow = Math.max(0, Math.round(el.scrollTop / CELL_H))
+    const firstRow = Math.max(0, Math.round(el.scrollTop / rowPitch.value))
     focusedIndex.value = Math.min(store.files.length - 1, firstRow * columns.value)
   }
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - CELL_H * 2) void store.loadMore()
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - rowPitch.value * 2) void store.loadMore()
 }
 
 /** End「一路到底」的自动加载开关：用户任何其它操作都会把它关掉 */
@@ -325,6 +384,11 @@ function navigatePreview(delta: number) {
   if (!n) return
   previewIndex.value = Math.max(0, Math.min(n - 1, previewIndex.value + delta))
 }
+
+/** 预览里直接移到隔离区：交给 App 搬，搬完同一位置就是下一张 */
+function onPreviewQuarantine(id: number) {
+  emit('quarantine', [id])
+}
 </script>
 
 <template>
@@ -344,7 +408,7 @@ function navigatePreview(delta: number) {
       <div
         class="grid-offset"
         :style="{
-          transform: `translateY(${startRow * CELL_H}px)`,
+          transform: `translateY(${startRow * rowPitch}px)`,
           gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
         }"
       >
@@ -394,6 +458,7 @@ function navigatePreview(delta: number) {
       :file="previewFile"
       @close="previewIndex = -1"
       @navigate="navigatePreview"
+      @quarantine="onPreviewQuarantine"
     />
   </div>
 </template>

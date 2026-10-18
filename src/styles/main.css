@@ -292,10 +292,12 @@ select:focus-visible,
   position: fixed;
   right: 18px;
   bottom: 62px;
-  z-index: 60;
+  /* 压在预览浮层（80）之上：在预览里搬图时，「撤销」必须点得到 */
+  z-index: 85;
   display: flex;
   align-items: center;
   gap: 10px;
+  max-width: min(720px, 72vw);
   background: #101317;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);

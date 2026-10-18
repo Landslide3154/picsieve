@@ -9,6 +9,8 @@ pub struct MoveReport {
     pub moved: u64,
     pub failed: u64,
     pub bytes: u64,
+    /// 这一批的批次号。前端靠它「撤销」——调 restore_batch 原路搬回。
+    pub batch_id: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -23,7 +25,10 @@ pub struct PurgeReport {
 /// 同一块盘上用 `rename`（原子、瞬时、不占额外空间）；跨盘时退化为
 /// 「复制 → 校验 BLAKE3 → 删除源文件」，校验不过就中止并保留原文件。
 pub fn move_in(db: &Db, ids: &[i64], quarantine_root: &Path, batch: &str) -> Result<MoveReport> {
-    let mut report = MoveReport::default();
+    let mut report = MoveReport {
+        batch_id: batch.to_string(),
+        ..MoveReport::default()
+    };
     for id in ids {
         let Some(rec) = db.get_file(*id)? else {
             report.failed += 1;
@@ -107,7 +112,10 @@ fn unique_dest(root: &Path, src: &Path) -> Result<PathBuf> {
 /// 把整批搬回原位置。
 pub fn restore(db: &Db, batch: &str) -> Result<MoveReport> {
     let rows = db.quarantine_batch(batch)?;
-    let mut report = MoveReport::default();
+    let mut report = MoveReport {
+        batch_id: batch.to_string(),
+        ..MoveReport::default()
+    };
     for (id, original, moved_path) in rows {
         let from = PathBuf::from(&moved_path);
         let to = PathBuf::from(&original);
@@ -226,6 +234,7 @@ mod tests {
 
         let report = move_in(&db, &[id], q.path(), "batch-1").unwrap();
         assert_eq!(report.moved, 1);
+        assert_eq!(report.batch_id, "batch-1", "批次号要回传给界面，撤销靠它");
 
         assert!(!std::path::Path::new(&original).exists(), "原位置应已清空");
         let rows = db.quarantine_batch("batch-1").unwrap();

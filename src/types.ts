@@ -111,6 +111,8 @@ export interface MoveReport {
   moved: number
   failed: number
   bytes: number
+  /** 这一批的批次号；撤销时原样传给 restoreBatch */
+  batchId: string
 }
 
 export interface PurgeReport {

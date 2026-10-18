@@ -51,7 +51,13 @@ const rootsTip = computed(() =>
         <button class="btn ghost sm" :disabled="!groups.checkedCount" @click="groups.clearChecked()">
           取消选择
         </button>
-        <button class="btn ghost sm" @click="groups.applyDefaults()">按建议重选</button>
+        <button
+          v-if="groups.kind === 'exact'"
+          class="btn ghost sm"
+          @click="groups.applyDefaults()"
+        >
+          按建议重选
+        </button>
       </template>
     </div>
 
@@ -62,7 +68,7 @@ const rootsTip = computed(() =>
 
     <div class="side right">
       <template v-if="isLibrary">
-        <span class="dim tiny hint">Ctrl+A 全选 · 空格预览 · PgUp/PgDn 翻页 · End 一路到底 · Delete 移入隔离区</span>
+        <span class="dim tiny hint">Ctrl+A 全选 · 空格预览 · Ctrl+滚轮 调大小 · PgUp/PgDn 翻页 · End 一路到底 · Delete 移入隔离区</span>
         <button
           class="btn danger"
           :disabled="!store.selectedCount"
@@ -72,7 +78,10 @@ const rootsTip = computed(() =>
         </button>
       </template>
       <template v-else-if="isGroups">
-        <span class="dim tiny hint">点和图库一样：单击选中/取消 · 双击打开 · 默认已选好要删的那几张</span>
+        <span class="dim tiny hint">
+          单击选中/取消 · 双击打开 ·
+          {{ groups.kind === 'exact' ? '默认已选好要删的那几张' : '看着像的默认不选，点每组「按建议」' }}
+        </span>
         <button
           class="btn danger"
           :disabled="!groups.checkedCount"

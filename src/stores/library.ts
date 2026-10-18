@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { countFiles as apiCount, formatStats, histogram, libraryStats, queryFiles } from '../api'
+import { loadPref, savePref } from '../prefs'
 import type { FileRecord, Filter, FormatStat, Histogram, LibraryStats } from '../types'
 
 /** 一次取多少张。滚到底会自动再取一批，见 loadMore。 */
@@ -32,8 +33,45 @@ export function emptyFilter(): Filter {
   }
 }
 
+/** 上次的筛选条件（localStorage）。坏数据一律忽略，宁可回到默认也不能让库「凭空空了」。 */
+function loadSavedFilter(): Filter {
+  const f = emptyFilter()
+  const raw = loadPref<Partial<Filter>>('filter', {})
+  const okNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+  if (okNum(raw.minPixels)) f.minPixels = raw.minPixels
+  if (okNum(raw.maxPixels)) f.maxPixels = raw.maxPixels
+  if (okNum(raw.minSize)) f.minSize = raw.minSize
+  if (okNum(raw.maxSize)) f.maxSize = raw.maxSize
+  if (Array.isArray(raw.exts) && raw.exts.every((x) => typeof x === 'string')) f.exts = raw.exts
+  if (typeof raw.onlyGray === 'boolean') f.onlyGray = raw.onlyGray
+  if (typeof raw.onlyDuplicated === 'boolean') f.onlyDuplicated = raw.onlyDuplicated
+  if (typeof raw.onlyDecodeError === 'boolean') f.onlyDecodeError = raw.onlyDecodeError
+  if (typeof raw.sort === 'string' && SORT_OPTIONS.some((o) => o.value === raw.sort)) f.sort = raw.sort
+  return f
+}
+
+function isDefaultFilter(f: Filter): boolean {
+  const d = emptyFilter()
+  return (
+    f.minPixels === d.minPixels &&
+    f.maxPixels === d.maxPixels &&
+    f.minSize === d.minSize &&
+    f.maxSize === d.maxSize &&
+    f.exts.length === 0 &&
+    !f.onlyGray &&
+    !f.onlyDuplicated &&
+    !f.onlyDecodeError &&
+    f.sort === d.sort
+  )
+}
+
 export const useLibrary = defineStore('library', () => {
-  const filter = ref<Filter>(emptyFilter())
+  // 恢复上次的筛选与排序；条件是「看起来怎样」，所以存在本地偏好里，不写进 settings.json
+  const initialFilter = loadSavedFilter()
+  const filter = ref<Filter>(initialFilter)
+  /** 启动时是否恢复了非默认筛选：App 用它决定要不要提示「清空筛选」 */
+  const filterRestored = !isDefaultFilter(initialFilter)
+  watch(filter, (f) => savePref('filter', { ...f, offset: 0 }), { deep: true })
   // 文件列表用 shallowRef：十万级的记录如果每条都包成响应式代理，
   // 内存和访问开销都翻好几倍。这里整表替换（不是原地改），shallowRef 完全够用。
   const files = shallowRef<FileRecord[]>([])
@@ -73,8 +111,11 @@ export const useLibrary = defineStore('library', () => {
     if (changed) selected.value = next
   }
 
-  /** 立刻整表刷新（换排序、改搜索、勾选筛选条件、首次进入时用） */
-  async function refreshNow() {
+  /**
+   * 立刻整表刷新（换排序、勾选筛选条件、首次进入时用）。
+   * `limit` 只在「搬完文件还不想丢掉已翻到的位置」时传大值——默认取一页。
+   */
+  async function refreshNow(limit = PAGE) {
     if (refreshTimer !== undefined) {
       clearTimeout(refreshTimer)
       refreshTimer = undefined
@@ -83,7 +124,7 @@ export const useLibrary = defineStore('library', () => {
     loading.value = true
     error.value = ''
     try {
-      const listPromise = queryFiles({ ...filter.value, offset: 0, limit: PAGE })
+      const listPromise = queryFiles({ ...filter.value, offset: 0, limit })
       const countPromise = apiCount(filter.value)
       const list = await listPromise
       if (my !== listSeq) return
@@ -244,6 +285,7 @@ export const useLibrary = defineStore('library', () => {
 
   return {
     filter,
+    filterRestored,
     files,
     total,
     selected,

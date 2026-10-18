@@ -131,8 +131,9 @@ watch(
     </header>
 
     <p class="tip pad dim small">
-      操作跟图库一样：<b>单击选中</b>（要删的那几张默认已经选好）、<b>双击用系统看图程序打开</b>，
-      选好后按最下面的「移到隔离区」一次搬走。想改就用点选增减。
+      操作跟图库一样：<b>单击选中</b>（要删的那几张点一下就是打勾）、<b>双击用系统看图程序打开</b>，
+      选好后按最下面的「移到隔离区」一次搬走。一模一样的组<b>默认已经选好</b>；
+      看着像的组<b>默认不选</b>，想省事就点那一组右上角的「按建议」。
       <span class="dim">PgUp/PgDn 翻页 · Home 顶部 · End 一路到底</span>
     </p>
 
@@ -159,6 +160,14 @@ watch(
             <span class="dim">·</span>
             <span class="dim tiny">{{ t.reason }}</span>
             <span class="grow" />
+            <button
+              v-if="groups.kind === 'similar'"
+              class="btn ghost sm"
+              title="把这一组里除建议保留以外的都勾上（只影响这一组）"
+              @click="groups.checkGroup(t)"
+            >
+              按建议
+            </button>
             <span class="dim tiny num">能省 {{ fmtBytes(t.members.reduce((s, m) => s + m.file.size, 0)) }}</span>
           </header>
 

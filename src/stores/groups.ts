@@ -81,13 +81,25 @@ export const useGroups = defineStore('groups', () => {
     checked.value = next
   }
 
-  /** 默认勾选：除「建议保留的那张」以外全勾（两张组 → 1 张，三张组 → 2 张） */
+  /**
+   * 默认勾选：只对「一模一样」的组生效——它们确实等价，替用户勾好是省事。
+   * 「看着像」是判断题，默认一张都不勾；想省事可以点某一组的「按建议」。
+   */
   function applyDefaults(list: GroupTile[] = tiles.value) {
+    if (kind.value !== 'exact') return
     const next = new Set(checked.value)
     for (const t of list) {
       for (const m of t.members) next.add(m.file.id)
       next.delete(t.keep.id)
     }
+    checked.value = next
+  }
+
+  /** 单组按建议勾好：相似组一次只处理一组，安全得多 */
+  function checkGroup(t: GroupTile) {
+    const next = new Set(checked.value)
+    for (const m of t.members) next.add(m.file.id)
+    next.delete(t.keep.id)
     checked.value = next
   }
 
@@ -148,6 +160,7 @@ export const useGroups = defineStore('groups', () => {
     isChecked,
     toggle,
     applyDefaults,
+    checkGroup,
     clearChecked,
     checkAll,
     allFiles,

@@ -5,7 +5,11 @@ import { baseName, fmtBytes } from '../format'
 import type { FileRecord } from '../types'
 
 const props = defineProps<{ file: FileRecord }>()
-const emit = defineEmits<{ (e: 'close'): void; (e: 'navigate', delta: number): void }>()
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'navigate', delta: number): void
+  (e: 'quarantine', id: number): void
+}>()
 
 const url = ref('')
 const loading = ref(true)
@@ -50,6 +54,10 @@ function onKey(e: KeyboardEvent) {
   } else if (e.key === 'ArrowLeft') {
     e.preventDefault()
     emit('navigate', -1)
+  } else if (e.key === 'Delete') {
+    // 预览里直接搬走；搬完整张列表会刷新，同一位置自动变成下一张
+    e.preventDefault()
+    emit('quarantine', props.file.id)
   }
 }
 
@@ -75,6 +83,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
     </div>
     <footer>
       <span class="muted small">← → 看上一张 / 下一张 · 空格或 Esc 关闭 · 双击图片用系统程序打开</span>
+      <span class="grow" />
+      <button class="btn danger sm" @click="emit('quarantine', props.file.id)">
+        移到隔离区（Delete）
+      </button>
     </footer>
   </div>
 </template>
