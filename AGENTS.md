@@ -21,7 +21,7 @@ Windows 桌面工具：清理本地大批量 Pixiv 图片（大量文件平铺�
 | 造测试图 | `python tools\make_test_images.py [目标目录]`（默认 `.e2e/images`） |
 | 生成图标 | `python tools\make_icon.py` |
 
-**端到端验证（改了界面/交互必跑；类型检查测不出真实点击路径）**：`tools/e2e-smoke.mjs` 驱真实 DOM 与库，`tools/e2e-quarantine.mjs` 逐文件核对磁盘 sha256；脚本与截图放 `.e2e/`。手法本身（WebView2 远程调试口 + CDP，其它 Tauri 项目可复用）见全局 `AGENTS.local.md` §7。
+**端到端验证（改了界面/交互必跑；类型检查测不出真实点击路径）**：`tools/e2e-smoke.mjs` 驱真实 DOM 与库，`tools/e2e-quarantine.mjs` 逐文件核对磁盘 sha256；脚本与截图放 `.e2e/`。手法本身（WebView2 远程调试口 + CDP，其它 Tauri 项目可复用）见全局 `AGENTS.local.md` §8。
 
 **凡会真动磁盘的用例（移入隔离区等）必须跑沙箱**：启动时带 `PICSIEVE_DATA_DIR=<临时目录>`，把数据库与设置指到别处。
 
